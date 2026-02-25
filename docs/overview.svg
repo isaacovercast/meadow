@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="860" viewBox="0 0 1400 860" role="img" aria-labelledby="title desc">
+  <title id="title">Multi-Species Resistance Workflow</title>
+  <desc id="desc">Overview of data ingestion, graph construction, model training, and visualization outputs.</desc>
+
+  <defs>
+    <style>
+      .title { font: 700 30px Arial, sans-serif; fill: #1f2937; }
+      .subtitle { font: 500 15px Arial, sans-serif; fill: #4b5563; }
+      .h { font: 700 16px Arial, sans-serif; fill: #111827; }
+      .b { font: 13px Arial, sans-serif; fill: #1f2937; }
+      .mono { font: 12px 'Courier New', monospace; fill: #111827; }
+      .box { fill: #ffffff; stroke: #9ca3af; stroke-width: 1.5; rx: 10; }
+      .boxBlue { fill: #ecfeff; stroke: #0891b2; stroke-width: 1.8; rx: 10; }
+      .boxGreen { fill: #ecfdf5; stroke: #059669; stroke-width: 1.8; rx: 10; }
+      .boxAmber { fill: #fffbeb; stroke: #d97706; stroke-width: 1.8; rx: 10; }
+      .boxPurple { fill: #f5f3ff; stroke: #7c3aed; stroke-width: 1.8; rx: 10; }
+      .arrow { stroke: #374151; stroke-width: 2.2; fill: none; marker-end: url(#arrowHead); }
+      .dash { stroke-dasharray: 7 6; }
+    </style>
+    <marker id="arrowHead" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <polygon points="0,0 10,4 0,8" fill="#374151" />
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1400" height="860" fill="#f9fafb"/>
+
+  <text x="40" y="56" class="title">Multi-Species Resistance Model Overview</text>
+  <text x="40" y="84" class="subtitle">Repository: meems-from-scratch | Core modules: data.py, graph.py, train.py, model.py, viz.py</text>
+
+  <!-- Inputs -->
+  <rect x="40" y="120" width="290" height="220" class="boxBlue"/>
+  <text x="58" y="150" class="h">1) Inputs Per Species</text>
+  <text x="58" y="176" class="b">- Genotypes: N x M (0/1/2 ALT counts)</text>
+  <text x="58" y="198" class="b">- Sample coordinates (lat/lon)</text>
+  <text x="58" y="220" class="b">- Optional environment covariates</text>
+  <text x="58" y="254" class="mono">load_pedic_species(...)</text>
+  <text x="58" y="276" class="mono">sample_rasters_for_sites(...)</text>
+  <text x="58" y="298" class="mono">RasterStack.sample_points(...)</text>
+
+  <!-- Pseudosites -->
+  <rect x="370" y="120" width="310" height="220" class="boxBlue"/>
+  <text x="388" y="150" class="h">2) Pseudo-Site Aggregation</text>
+  <text x="388" y="176" class="b">Assign each sample to nearest grid node</text>
+  <text x="388" y="198" class="b">(triangular or rectangular grid)</text>
+  <text x="388" y="220" class="b">Compute site-level genotype means</text>
+  <text x="388" y="254" class="mono">build_pseudosites(...)</text>
+  <text x="388" y="276" class="mono">aggregate_site_genotypes(...)</text>
+  <text x="388" y="298" class="mono">pairwise_site_distance(...)</text>
+
+  <!-- Graph build -->
+  <rect x="720" y="120" width="330" height="260" class="boxGreen"/>
+  <text x="738" y="150" class="h">3) Graph Construction</text>
+  <text x="738" y="176" class="b">Choose one mode in build_species_graphs(...):</text>
+  <text x="738" y="202" class="b">- delaunay / knn (per-species graph)</text>
+  <text x="738" y="224" class="b">- dense_mesh (shared graph across species)</text>
+  <text x="738" y="246" class="b">- input_graph (.gml) shared global graph</text>
+  <text x="738" y="272" class="b">bbox: square / convex_hull / polygon file</text>
+  <text x="738" y="304" class="mono">edge_features(...)</text>
+  <text x="738" y="326" class="mono">SpeciesGraphData: edge_index, node_coords, pairs</text>
+
+  <!-- Training -->
+  <rect x="1080" y="120" width="280" height="300" class="boxAmber"/>
+  <text x="1098" y="150" class="h">4) Training Loop</text>
+  <text x="1098" y="176" class="mono">train_model(...)</text>
+  <text x="1098" y="204" class="b">For each species s in each epoch:</text>
+  <text x="1098" y="226" class="b">a) Model predicts edge resistance</text>
+  <text x="1098" y="248" class="b">b) Build effective resistance matrix R</text>
+  <text x="1098" y="270" class="b">c) Predict D_hat = alpha[s] + beta[s] * R_ij</text>
+  <text x="1098" y="292" class="b">d) MSE vs observed genetic distances</text>
+  <text x="1098" y="314" class="b">e) Shared + species regularization</text>
+  <text x="1098" y="336" class="b">f) Backprop once on summed multi-species loss</text>
+  <text x="1098" y="358" class="b">g) Early stopping on validation loss</text>
+
+  <!-- Model detail -->
+  <rect x="370" y="410" width="680" height="220" class="boxPurple"/>
+  <text x="388" y="440" class="h">Model Internals (MultiSpeciesResistanceModel)</text>
+  <text x="388" y="468" class="b">Shared network: one EdgeMLP used by all species</text>
+  <text x="388" y="490" class="b">Species networks: one EdgeMLP per species</text>
+  <text x="388" y="512" class="b">Edge resistance_s = softplus(shared(edge) + species_s(edge)) + 1e-4</text>
+  <text x="388" y="534" class="b">Conductance = 1 / resistance, Laplacian built from graph edges</text>
+  <text x="388" y="556" class="b">Effective resistance via pseudoinverse(Laplacian)</text>
+  <text x="388" y="590" class="mono">alpha[s]: baseline offset | beta[s]: sensitivity to resistance</text>
+
+  <!-- Outputs -->
+  <rect x="40" y="410" width="290" height="300" class="box"/>
+  <text x="58" y="440" class="h">Outputs</text>
+  <text x="58" y="466" class="b">- Trained model weights</text>
+  <text x="58" y="488" class="b">- Species-specific edge resistance maps</text>
+  <text x="58" y="510" class="b">- Shared resistance component</text>
+  <text x="58" y="532" class="b">- Optional rasterized shared surface</text>
+  <text x="58" y="566" class="mono">plot_species_resistance(...)</text>
+  <text x="58" y="588" class="mono">plot_multi_edge_resistance(...)</text>
+  <text x="58" y="610" class="mono">overlay_stat = mean | std</text>
+  <text x="58" y="632" class="mono">plot_shared_resistance(...)</text>
+
+  <!-- Evaluation -->
+  <rect x="1080" y="460" width="280" height="250" class="box"/>
+  <text x="1098" y="490" class="h">Evaluation Guidance</text>
+  <text x="1098" y="516" class="b">- Train/val loss trajectories</text>
+  <text x="1098" y="538" class="b">- Predicted vs observed pair distances</text>
+  <text x="1098" y="560" class="b">- Stability of alpha/beta by bootstrap</text>
+  <text x="1098" y="582" class="b">- Compare overlay mean vs std maps</text>
+  <text x="1098" y="604" class="b">- Check shared graph assumptions hold</text>
+
+  <!-- Arrows -->
+  <path d="M330 230 L370 230" class="arrow"/>
+  <path d="M680 230 L720 230" class="arrow"/>
+  <path d="M1050 250 L1080 250" class="arrow"/>
+  <path d="M860 380 L860 410" class="arrow"/>
+  <path d="M370 520 L330 520" class="arrow"/>
+  <path d="M1040 520 L1080 520" class="arrow"/>
+  <path d="M1180 420 L1180 460" class="arrow dash"/>
+
+  <text x="40" y="808" class="subtitle">File: docs/overview.svg | This diagram reflects the current implementation in src/multispecies_resistance.</text>
+</svg>

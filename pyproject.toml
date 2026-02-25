@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=67", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multispecies-resistance"
+version = "0.1.0"
+description = "Minimal multi-species resistance model prototype"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [
+  { name = "Isaac" }
+]
+keywords = ["population-genetics", "landscape-genetics", "resistance", "feems", "eems"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+]
+dependencies = [
+  "numpy",
+  "scipy",
+  "torch",
+  "rasterio",
+  "matplotlib",
+  "contextily",
+  "geopandas",
+  "folium",
+  "pykrige",
+  "networkx",
+]
+
+[project.optional-dependencies]
+dev = [
+  "jupyterlab",
+  "mkdocs",
+  "mkdocs-material",
+  "pytest",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

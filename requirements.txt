@@ -1,0 +1,13 @@
+numpy
+scipy
+torch
+matplotlib
+rasterio
+jupyterlab
+contextily
+geopandas
+folium
+pykrige
+networkx
+mkdocs
+mkdocs-material

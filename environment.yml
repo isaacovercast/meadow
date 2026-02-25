@@ -1,0 +1,19 @@
+name: multispecies-resistance
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy
+  - scipy
+  - openblas
+  - pytorch
+  - rasterio
+  - matplotlib
+  - jupyterlab
+  - contextily
+  - geopandas
+  - folium
+  - pykrige
+  - networkx
+  - mkdocs
+  - mkdocs-material

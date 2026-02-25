@@ -1,0 +1,32 @@
+site_name: Multi-Species Resistance
+site_description: Documentation for multi-species resistance modeling utilities
+theme:
+  name: material
+  features:
+    - navigation.instant
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+  palette:
+    - scheme: default
+      primary: teal
+      accent: indigo
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Overview: overview.md
+  - Data Utilities: data.md
+  - Graph Utilities: graph.md
+  - Training Utilities: train.md
+  - Model: model.md
+  - Raster Utilities: raster.md
+  - Climate Utilities: climate.md
+  - I/O Utilities: io.md
+  - Visualization Utilities: viz.md

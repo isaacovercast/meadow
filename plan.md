@@ -1,231 +1,166 @@
-# Plan: Simplify Pipeline to Sample-Level Inputs Only (Breaking Refactor)
+# Plan: Move `SpeciesGraphData` to `SpeciesGraph` and Add Built-In Plotting
 
-## 1. Refactor Goals (Strict)
-1. `SpeciesData` should contain only sample-level genotype and coordinate data, plus species identity (`name`).
-2. Remove pseudo-site preprocessing from the default pipeline.
-3. Move all environmental extraction into `build_species_graphs`.
-4. Remove compatibility code and legacy members/functions that are no longer needed.
-5. Prefer deletion over deprecation.
+## 1. Scope and Intent
+This plan covers a focused refactor:
+1. Move graph result container class from `train.py` into `graph.py`.
+2. Rename `SpeciesGraphData` to `SpeciesGraph`.
+3. Add `sample_coords` to retain original sampling coordinates for each species graph.
+4. Add `SpeciesGraph.plot()` to render graph edges on a basemap, optionally color edges by selected edge-feature column, and overlay original sample points.
 
-This plan intentionally favors simplification over backward compatibility.
+No backward compatibility layer will be added unless explicitly requested later.
 
-## 2. Final Target Architecture
+## 2. Target API
 
-### 2.1 Canonical in-memory species unit
-`SpeciesData` will represent only observed samples:
+### 2.1 New class location and name
+- Class lives in: `src/multispecies_resistance/graph.py`
+- Class name: `SpeciesGraph`
+
+### 2.2 Proposed `SpeciesGraph` fields
 - `name: str`
-- `genotypes: N x M`
-- `sample_coords: N x 2` (`lat, lon`)
+- `edge_index: np.ndarray` (`E x 2`, int)
+- `edge_features: np.ndarray` (`E x F`, float)
+- `node_coords: np.ndarray` (`N x 2`, lat/lon by project convention)
+- `sample_coords: np.ndarray` (`S x 2`, original observed sample coords)
+- `pair_i: np.ndarray`
+- `pair_j: np.ndarray`
+- `pair_dist: np.ndarray`
+- `num_nodes: int`
+- `val_pair_i: np.ndarray | None = None`
+- `val_pair_j: np.ndarray | None = None`
+- `val_pair_dist: np.ndarray | None = None`
 
-No site-level storage in `SpeciesData`.
+### 2.3 `SpeciesGraph.plot()` behavior
+`plot()` should:
+1. Draw edges as line segments between `node_coords`.
+2. Optionally color edges by an edge-feature column index.
+3. Overlay `sample_coords` as points.
+4. Optionally add a basemap using projected coordinates.
+5. Return plotting artifacts for downstream use.
 
-### 2.2 Where node definitions happen
-All node definitions happen in `build_species_graphs`:
-- per-sample nodes (`graph_type="delaunay"|"knn"` default)
-- shared mesh nodes (`graph_type="dense_mesh"`)
-- provided global nodes (`input_graph`)
+## 3. Detailed File-by-File Plan
 
-### 2.3 Where environmental extraction happens
-Environmental covariates are sampled in `build_species_graphs` at the node coordinates actually used by edges and pairwise training targets.
+## 3.1 `src/multispecies_resistance/graph.py`
 
-## 3. File-by-File Change Plan
+### Add class definition
+- Introduce `@dataclass class SpeciesGraph` with the fields listed above.
+- Keep type hints strict and explicit.
 
-## 3.1 `src/multispecies_resistance/data.py`
+### Add member method `plot(...)`
+Proposed signature:
+- `def plot(self, edge_feature_idx: int | None = None, ax=None, basemap: bool | object = True, basemap_crs: str = "EPSG:3857", coord_order: str = "latlon", coords_crs: str = "EPSG:4326", sample_size: float = 12.0, edge_width: float = 2.0, edge_cmap="viridis", sample_color: str = "black", sample_alpha: float = 0.8, edge_alpha: float = 0.9, add_colorbar: bool = True, title: str | None = None):`
 
-### Keep
-- `SpeciesData` (redefined)
-- `aggregate_site_genotypes`
-- `pairwise_site_distance`
+Method behavior:
+1. Validate `edge_index`, `node_coords`, `edge_features`, `sample_coords` shapes.
+2. If `edge_feature_idx is None`, draw edges in a constant color.
+3. Else validate index in `[0, F-1]` and map `edge_features[:, edge_feature_idx]` to edge colors.
+4. Build edge segments from `node_coords[edge_index[:, 0/1]]`.
+5. Transform coordinates when `basemap` is enabled (using existing projection helper).
+6. Draw edges with `LineCollection`.
+7. Draw sample points from `sample_coords` over the edges.
+8. Add optional colorbar and title.
+9. Return `(ax, gdf_edges)` or `(ax, gdf_edges, mappable)` depending on implementation preference (choose one and document it).
 
-### Remove
-- `remap_sites`
-- `_ensure_latlon`
-- `grid_nodes_from_bbox` (move to `graph.py`, see below)
-- `build_pseudosites`
+### Internal helper reuse
+- Reuse existing projection logic in `graph.py` (or minimal local helper inside method).
+- Avoid duplicating projection code already available.
 
-### Redefine `SpeciesData`
-- Replace fields with only:
-  - `name: str`
-  - `genotypes: np.ndarray`
-  - `sample_coords: np.ndarray`
-- Remove `sample_sites`, `site_coords`, `site_env`, `num_sites()`.
+## 3.2 `src/multispecies_resistance/train.py`
 
-Rationale:
-- Enforce a single sample-level contract.
-- Prevent persistent pseudo-site/site state from leaking across stages.
+### Remove local class
+- Delete `SpeciesGraphData` dataclass from this file.
 
-## 3.2 `src/multispecies_resistance/graph.py`
+### Update imports
+- Import `SpeciesGraph` from `multispecies_resistance.graph`.
 
-### Keep
-- `haversine_km`
-- projection helpers
-- graph builders (`build_knn_graph`, `build_delaunay_graph`, `build_dense_mesh_graph`)
-- `edge_features`, `standardize_features`
+### Update `build_species_graphs` outputs
+- Change return annotation from `List[SpeciesGraphData]` to `List[SpeciesGraph]`.
+- Construct `SpeciesGraph(...)` instances instead of `SpeciesGraphData(...)`.
+- Populate new field:
+  - `sample_coords=sp.sample_coords` for each species graph.
 
-### Move in
-- Move `grid_nodes_from_bbox` from `data.py` into `graph.py` because it is mesh infrastructure.
+### Preserve current training behavior
+- Keep pair construction/splitting/training logic unchanged except for class name/type updates.
 
-### Update
-- Update imports accordingly (`train.py` should get mesh helpers from `graph.py`).
+## 3.3 `src/multispecies_resistance/__init__.py`
 
-## 3.3 `src/multispecies_resistance/io.py`
+### Export surface update
+- Export `SpeciesGraph` from `.graph`.
+- Remove export of `SpeciesGraphData` from `.train`.
+- Ensure top-level import paths remain consistent for users.
 
-### `load_pedic_species` becomes sample-only loader
-Current behavior to remove:
-- pseudo-site construction
-- raster stack creation/sampling
-- site-level assignments
+## 3.4 `src/multispecies_resistance/viz.py`
 
-New behavior:
-1. Load sample `coords` and `genotypes`.
-2. Convert PEDIC `lon,lat` to `lat,lon` once.
-3. Return `SpeciesData(name=..., genotypes=..., sample_coords=...)` entries only.
+### Integrate with class method (minimal-change strategy)
+- Keep existing standalone plotting utilities for now.
+- Optionally refactor internals to call `SpeciesGraph.plot()` where natural, but do not force a broad rewrite in this pass.
+- Ensure no duplicated behavior diverges (especially coordinate projection and basemap handling).
 
-### Signature simplification
-- Remove from signature:
-  - `spacing_km`, `spacing_deg`
-  - `raster_paths`, `raster_root`, `raster_pattern`, `raster_recursive`
-  - `coords_crs`, `raster_fill_method`
-- Keep only:
-  - `root`, `species_names`, `mmap_mode`
+## 3.5 Notebooks and examples
 
-### Return simplification
-- Return only `List[SpeciesData]`.
-- Remove `env_names` from return type.
+### Update class naming references
+- Replace any mention of `SpeciesGraphData` with `SpeciesGraph` semantics.
 
-## 3.4 `src/multispecies_resistance/train.py`
+### Demonstrate new method usage
+- Update plotting cells to call:
+  - `graphs[idx].plot(edge_feature_idx=<k>, basemap=True)`
+- Keep existing figure outputs semantically equivalent.
 
-This becomes the main orchestration layer for node definition + sample-to-node assignment + env sampling + graph features.
+## 3.6 Documentation (`docs/` + README)
 
-### `build_species_graphs` signature changes
-Add raster/env inputs:
-- `raster_paths: Iterable[str | Path] | None = None`
-- `raster_root: str | Path | None = None`
-- `raster_pattern: str = "*.tif"`
-- `raster_recursive: bool = True`
-- `raster_fill_method: str = "nan"`
-- `raster_coord_order: str = "latlon"`
-- `raster_coords_crs: str = "EPSG:4326"`
+### Document new class
+- Add/refresh module docs describing `SpeciesGraph` fields including `sample_coords`.
+- Document `plot()` parameters and return value.
 
-### Remove all dependence on `sp.site_coords`, `sp.sample_sites`, `sp.site_env`
+### Update training docs
+- `build_species_graphs` now returns `List[SpeciesGraph]`.
+- Explain that each graph object is self-contained for mapping and diagnostics.
 
-### Explicit sample-to-node assignment algorithm (inside `build_species_graphs`)
-For each species `sp` with `N` samples:
+## 4. Design Decisions and Constraints
 
-1. Define `node_coords` by graph mode:
-- `delaunay` / `knn`: `node_coords = sp.sample_coords`.
-- `dense_mesh`: `node_coords = mesh_coords` (shared across species).
-- `input_graph`: `node_coords = global graph node coordinates`.
+### 4.1 Coordinate conventions
+- Keep canonical in-memory coordinates as `lat, lon`.
+- Convert to plotting order (`lon, lat`) and projected XY only at render time.
 
-2. Build `sample_sites` (length `N`) mapping sample index -> node index:
-- `delaunay` / `knn`: identity map
-  - `sample_sites = np.arange(N, dtype=np.int64)`.
-- `dense_mesh`: nearest mesh node
-  - build KDTree on `mesh_coords`.
-  - `sample_sites = tree.query(sp.sample_coords, k=1)[1].astype(np.int64)`.
-- `input_graph`: nearest provided graph node
-  - build KDTree on global node coords.
-  - `sample_sites = tree.query(sp.sample_coords, k=1)[1].astype(np.int64)`.
+### 4.2 Edge coloring
+- Coloring by edge feature uses raw column values by default.
+- Do not auto-standardize in `plot()`; plotting should reflect stored values.
 
-3. Aggregate sample genotypes by `sample_sites`:
-- `site_genos, site_counts = aggregate_site_genotypes(sp.genotypes, sample_sites, num_sites=node_coords.shape[0], allow_empty=True)`.
-- Use only occupied nodes (`site_counts > 0`) when building pairwise targets.
+### 4.3 Basemap dependency behavior
+- If basemap libs are unavailable, fail with clear error or gracefully fall back to non-basemap plotting (pick one and document).
 
-4. Build edges on full `node_coords`, and compute `edge_features` using env sampled at `node_coords`.
+### 4.4 Performance
+- Use vectorized segment creation and a `LineCollection` for scale.
+- Avoid per-edge Python draw calls.
 
-This yields exactly one remap in shared-node modes (sample -> shared node), with no pseudo-site intermediate.
+## 5. Validation Plan
 
-### Environmental extraction in `build_species_graphs`
-1. If raster inputs are provided:
-- open one raster stack.
-- sample at `node_coords` for each graph mode (once for shared-node modes).
-2. Else if `mesh_env` provided in shared-node modes, use it.
-3. Else use zero-width env features.
+## 5.1 Static checks
+1. Imports succeed:
+   - `from multispecies_resistance.graph import SpeciesGraph`
+2. No stale references to `SpeciesGraphData`.
 
-## 3.5 `src/multispecies_resistance/viz.py`
+## 5.2 Behavioral checks
+1. `build_species_graphs(...)` returns objects with populated `sample_coords`.
+2. `graphs[i].plot()` works with:
+   - `edge_feature_idx=None`
+   - valid `edge_feature_idx`
+   - invalid `edge_feature_idx` (expected error path)
+3. Sample points visibly overlay edge layer.
 
-Since `SpeciesData` no longer has site-level fields:
-- replace usages that assume `sp.site_coords` with:
-  - `g.node_coords` for node overlays, or
-  - explicit `sample_coords_list` for sample overlays.
-- for `plot_shared_resistance(..., show_sites=True)`, accept explicit sample coords to overlay sample points.
+## 5.3 Notebook checks
+1. All notebooks run with updated class name and plotting calls.
+2. No notebook references to removed class name.
 
-Goal: visualization consumes graph outputs + optional sample overlays, not inferred site-level state.
+## 6. Implementation Sequence
+1. Add `SpeciesGraph` + `plot()` in `graph.py`.
+2. Update `train.py` to construct and return `SpeciesGraph`.
+3. Update package exports in `__init__.py`.
+4. Update notebooks/examples to use `graphs[i].plot(...)`.
+5. Update docs and README.
+6. Run compile/tests/notebook JSON validation.
 
-## 3.6 `src/multispecies_resistance/__init__.py`
-
-Update exports to match simplified API:
-- remove `build_pseudosites` export.
-- remove exports for deleted helpers.
-- keep graph/train/raster/climate/model/viz exports that remain.
-
-## 3.7 `src/multispecies_resistance/raster.py`
-
-No algorithmic changes required.
-
-## 3.8 `src/multispecies_resistance/climate.py`
-
-No algorithmic changes required.
-
-Optional follow-up:
-- let `build_species_graphs` accept climate-source args and call `download_climate_layers` internally.
-
-## 3.9 `src/multispecies_resistance/model.py`
-
-No changes required.
-
-## 4. Deletion List (Intentional)
-
-Delete these functions/members as part of simplification:
-1. `build_pseudosites` (`data.py`)
-2. `remap_sites` (`data.py`)
-3. `SpeciesData.sample_sites`
-4. `SpeciesData.site_coords`
-5. `SpeciesData.site_env`
-6. `SpeciesData.num_sites()`
-7. loader-time raster options in `load_pedic_species`
-8. loader return `env_names`
-
-## 5. API Break Summary
-
-Deliberate breaking changes:
-1. `SpeciesData` schema becomes sample-only plus `name`.
-2. `load_pedic_species` signature and return type change.
-3. `build_species_graphs` gains raster inputs and owns sample-to-node assignment.
-4. pseudo-site helpers/pathway removed.
-
-No compatibility layer will be provided.
-
-## 6. Test Plan (Aligned to Simplification)
-
-### 6.1 Unit tests
-1. `load_pedic_species` returns `SpeciesData(name, genotypes, sample_coords)` only.
-2. `build_species_graphs` per-sample mode uses identity sample mapping.
-3. `build_species_graphs` dense mesh mode maps samples directly to mesh nodes.
-4. `build_species_graphs` input graph mode maps samples directly to provided nodes.
-
-### 6.2 Env extraction tests
-1. Rasters sampled at `node_coords` used by each graph mode.
-2. Shared-node modes sample env once and reuse.
-3. No raster inputs -> zero-width env features.
-
-### 6.3 Visualization tests
-1. Plot functions work with graph outputs and no site-level fields in `SpeciesData`.
-2. Sample overlays require explicit sample coordinate inputs.
-
-## 7. Implementation Order
-1. Redefine `SpeciesData` and delete pseudo-site helpers in `data.py`.
-2. Move `grid_nodes_from_bbox` into `graph.py`.
-3. Rewrite `load_pedic_species` to sample-only loader.
-4. Refactor `build_species_graphs` to own node definition, sample-to-node mapping, and env extraction.
-5. Update visualization functions for new data contract.
-6. Update exports and docs.
-7. Add/repair tests for new API.
-
-## 8. Expected Result
-After refactor:
-1. Canonical species representation is minimal: `name`, sample genotypes, sample coordinates.
-2. No pseudo-site state persists in memory objects.
-3. Shared graph modes perform a single nearest-neighbor mapping from samples to shared nodes.
-4. Environmental extraction is tied to the exact training node geometry.
-5. Code surface is smaller and easier to reason about.
+## 7. Expected End State
+1. Graph outputs are represented by a single canonical class `SpeciesGraph` in `graph.py`.
+2. Every graph object retains original observed sample coordinates via `sample_coords`.
+3. Mapping a species graph becomes one call (`graph.plot(...)`) with optional edge-feature coloring.
+4. The pipeline is cleaner: graph construction in `train.py`, graph representation and graph-level visualization in `graph.py`.

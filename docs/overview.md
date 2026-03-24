@@ -4,17 +4,10 @@
 
 ## End-to-End Workflow
 
-1. **Load data**
-- Use `SpeciesData` directly or `load_pedic_species(...)` for PEDIC-style inputs.
-
-2. **Create graph inputs**
-- Build per-species graphs (`"delaunay"`, `"knn"`) or a shared dense mesh/global graph with `build_species_graphs(...)`.
-
-3. **Train model**
-- Fit shared/species resistance using `train_model(...)` with optional validation splits and early stopping.
-
-4. **Visualize outputs**
-- Plot species-specific edge resistance, multi-species overlays, shared resistance surfaces, and matrix summaries with functions in `viz`.
+1. **Load data:** Use `SpeciesData` directly or `load_pedic_species(...)` for PEDIC-style inputs.
+2. **Create graph inputs:** Build a shared dense mesh by default, or pass `input_graph` to use a provided shared graph with `build_species_graphs(...)`.
+3. **Train model:** Fit shared/species resistance using `train_model(...)` with optional validation splits and early stopping.
+4. **Visualize outputs:** Plot species-specific edge resistance, multi-species overlays, shared resistance surfaces, and matrix summaries with functions in `viz`.
 
 ## Module Pages
 

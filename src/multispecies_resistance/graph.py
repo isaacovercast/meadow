@@ -1,13 +1,269 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Tuple
 
 import numpy as np
-from scipy.spatial import cKDTree
 
-from multispecies_resistance.data import grid_nodes_from_bbox
 from rasterio.crs import CRS
 from rasterio.warp import transform
+
+
+@dataclass
+class SpeciesGraph:
+    """Container for one species graph plus pairwise training targets.
+
+    Parameters
+    ----------
+    name : str
+        Species name.
+    edge_index : np.ndarray
+        `E x 2` edge list over graph nodes.
+    edge_features : np.ndarray
+        `E x F` edge feature matrix.
+    node_coords : np.ndarray
+        `N x 2` graph node coordinates in `lat, lon`.
+    sample_coords : np.ndarray
+        `S x 2` observed sample coordinates in `lat, lon`.
+    pair_i : np.ndarray
+        Pair row node indices for target distances.
+    pair_j : np.ndarray
+        Pair column node indices for target distances.
+    pair_dist : np.ndarray
+        Pairwise target distances aligned with `(pair_i, pair_j)`.
+    num_nodes : int
+        Number of graph nodes.
+    val_pair_i : np.ndarray | None, optional
+        Optional validation pair row indices.
+    val_pair_j : np.ndarray | None, optional
+        Optional validation pair column indices.
+    val_pair_dist : np.ndarray | None, optional
+        Optional validation target distances.
+    """
+
+    name: str
+    edge_index: np.ndarray
+    edge_features: np.ndarray
+    node_coords: np.ndarray
+    sample_coords: np.ndarray
+    pair_i: np.ndarray
+    pair_j: np.ndarray
+    pair_dist: np.ndarray
+    num_nodes: int
+    val_pair_i: np.ndarray | None = None
+    val_pair_j: np.ndarray | None = None
+    val_pair_dist: np.ndarray | None = None
+
+    def plot(
+        self,
+        edge_feature_idx: int | None = None,
+        ax=None,
+        basemap: bool | object = True,
+        basemap_crs: str = "EPSG:3857",
+        coord_order: str = "latlon",
+        coords_crs: str = "EPSG:4326",
+        sample_size: float = 12.0,
+        edge_width: float = 2.0,
+        edge_cmap: str = "viridis",
+        sample_color: str = "black",
+        sample_alpha: float = 0.8,
+        edge_alpha: float = 0.9,
+        edge_color: str = "#1f77b4",
+        add_colorbar: bool = True,
+        title: str | None = None,
+    ):
+        """Plot graph edges with optional edge-feature coloring and sample overlay.
+
+        Parameters
+        ----------
+        edge_feature_idx : int | None, optional
+            Column index in `edge_features` used for edge coloring. When `None`,
+            edges are drawn with a constant color.
+        ax : matplotlib.axes.Axes | None, optional
+            Existing axis to draw on. A new one is created when omitted.
+        basemap : bool | object, optional
+            `True` uses CartoDB Positron, `False` disables basemap, or provide a
+            contextily tile provider object.
+        basemap_crs : str, optional
+            CRS used when rendering with basemap tiles.
+        coord_order : str, optional
+            Coordinate order for plotting (`"latlon"` or `"lonlat"`).
+        coords_crs : str, optional
+            CRS of stored coordinates.
+        sample_size : float, optional
+            Marker size for sample points.
+        edge_width : float, optional
+            Edge line width.
+        edge_cmap : str, optional
+            Colormap used when `edge_feature_idx` is provided.
+        sample_color : str, optional
+            Marker color for sample points.
+        sample_alpha : float, optional
+            Marker alpha for sample points.
+        edge_alpha : float, optional
+            Edge alpha value.
+        edge_color : str, optional
+            Constant edge color used when `edge_feature_idx=None`.
+        add_colorbar : bool, optional
+            Whether to add a colorbar when feature coloring is enabled.
+        title : str | None, optional
+            Optional plot title; defaults to species name.
+
+        Returns
+        -------
+        tuple
+            `(ax, gdf_edges)` where `gdf_edges` is a GeoDataFrame of edge lines.
+        """
+        import geopandas as gpd
+        import matplotlib.pyplot as plt
+        from matplotlib.collections import LineCollection
+        from shapely.geometry import LineString
+
+        node_coords = np.asarray(self.node_coords, dtype=np.float64)
+        sample_coords = np.asarray(self.sample_coords, dtype=np.float64)
+        edge_index = np.asarray(self.edge_index, dtype=np.int64)
+        edge_features = np.asarray(self.edge_features, dtype=np.float64)
+
+        if node_coords.ndim != 2 or node_coords.shape[1] != 2:
+            raise ValueError("node_coords must have shape (N, 2).")
+        if sample_coords.ndim != 2 or sample_coords.shape[1] != 2:
+            raise ValueError("sample_coords must have shape (S, 2).")
+        if edge_index.ndim != 2 or edge_index.shape[1] != 2:
+            raise ValueError("edge_index must have shape (E, 2).")
+        if edge_features.ndim != 2:
+            raise ValueError("edge_features must have shape (E, F).")
+        if edge_features.shape[0] != edge_index.shape[0]:
+            raise ValueError("edge_features row count must equal edge_index row count.")
+        if coord_order not in {"latlon", "lonlat"}:
+            raise ValueError("coord_order must be 'latlon' or 'lonlat'.")
+        if node_coords.shape[0] == 0:
+            raise ValueError("node_coords is empty.")
+
+        if ax is None:
+            _, ax = plt.subplots(figsize=(6, 5))
+
+        if basemap is not None and basemap is not False:
+            node_xy = project_coords(
+                node_coords,
+                coord_order=coord_order,
+                coords_crs=coords_crs,
+                target_crs=basemap_crs,
+            )
+            sample_xy = project_coords(
+                sample_coords,
+                coord_order=coord_order,
+                coords_crs=coords_crs,
+                target_crs=basemap_crs,
+            )
+            x = node_xy[:, 0]
+            y = node_xy[:, 1]
+            xs = sample_xy[:, 0]
+            ys = sample_xy[:, 1]
+            plot_crs = basemap_crs
+            xlabel, ylabel = "X", "Y"
+        else:
+            if coord_order == "latlon":
+                x = node_coords[:, 1]
+                y = node_coords[:, 0]
+                xs = sample_coords[:, 1]
+                ys = sample_coords[:, 0]
+            else:
+                x = node_coords[:, 0]
+                y = node_coords[:, 1]
+                xs = sample_coords[:, 0]
+                ys = sample_coords[:, 1]
+            plot_crs = coords_crs
+            xlabel, ylabel = "Longitude", "Latitude"
+
+        segments = [[(x[i], y[i]), (x[j], y[j])] for i, j in edge_index]
+        line_collection: LineCollection
+        edge_values = np.full(edge_index.shape[0], np.nan, dtype=np.float64)
+        edge_feature_col = (
+            np.full(edge_index.shape[0], -1, dtype=np.int64)
+            if edge_feature_idx is None
+            else np.full(edge_index.shape[0], int(edge_feature_idx), dtype=np.int64)
+        )
+
+        if edge_feature_idx is None:
+            line_collection = LineCollection(
+                segments,
+                colors=edge_color,
+                linewidths=edge_width,
+                alpha=edge_alpha,
+            )
+        else:
+            if edge_features.shape[1] == 0:
+                raise ValueError("edge_features has zero columns; cannot color by feature index.")
+            if edge_feature_idx < 0 or edge_feature_idx >= edge_features.shape[1]:
+                raise IndexError(
+                    f"edge_feature_idx={edge_feature_idx} out of range for "
+                    f"edge_features with {edge_features.shape[1]} columns."
+                )
+            edge_values = edge_features[:, edge_feature_idx]
+            line_collection = LineCollection(
+                segments,
+                cmap=edge_cmap,
+                linewidths=edge_width,
+                alpha=edge_alpha,
+            )
+            line_collection.set_array(edge_values)
+
+        ax.add_collection(line_collection)
+        if sample_coords.shape[0] > 0:
+            ax.scatter(xs, ys, s=sample_size, c=sample_color, alpha=sample_alpha, zorder=3)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+
+        if title is None:
+            title = self.name
+        if title:
+            ax.set_title(title)
+
+        if sample_coords.shape[0] > 0:
+            x_min = min(float(np.min(x)), float(np.min(xs)))
+            x_max = max(float(np.max(x)), float(np.max(xs)))
+            y_min = min(float(np.min(y)), float(np.min(ys)))
+            y_max = max(float(np.max(y)), float(np.max(ys)))
+        else:
+            x_min = float(np.min(x))
+            x_max = float(np.max(x))
+            y_min = float(np.min(y))
+            y_max = float(np.max(y))
+        ax.set_xlim(x_min, x_max)
+        ax.set_ylim(y_min, y_max)
+
+        if edge_feature_idx is not None and add_colorbar:
+            plt.colorbar(
+                line_collection,
+                ax=ax,
+                label=f"edge_features[:, {edge_feature_idx}]",
+            )
+
+        if basemap is not None and basemap is not False:
+            try:
+                import contextily as ctx
+            except Exception as exc:
+                raise ImportError(
+                    "contextily is required when basemap is enabled. "
+                    "Install with `conda install -c conda-forge contextily` "
+                    "or disable basemap with basemap=False."
+                ) from exc
+            basemap_source = ctx.providers.CartoDB.Positron if basemap is True else basemap
+            ctx.add_basemap(ax, source=basemap_source, crs=basemap_crs, reset_extent=False)
+            ax.set_xlim(x_min, x_max)
+            ax.set_ylim(y_min, y_max)
+
+        gdf_edges = gpd.GeoDataFrame(
+            {
+                "u": edge_index[:, 0],
+                "v": edge_index[:, 1],
+                "edge_feature_idx": edge_feature_col,
+                "edge_value": edge_values,
+            },
+            geometry=[LineString(seg) for seg in segments],
+            crs=plot_crs,
+        )
+        return ax, gdf_edges
 
 
 def haversine_km(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -101,55 +357,74 @@ def project_coords(
     return np.column_stack([xs, ys]).astype(np.float64)
 
 
-def build_knn_graph(
-    site_coords: np.ndarray,
-    k: int = 6,
-    project_to: str | CRS | None = None,
-    coord_order: str = "latlon",
-    coords_crs: str | CRS | None = "EPSG:4326",
+def grid_nodes_from_bbox(
+    sample_coords: np.ndarray,
+    spacing_km: float | None = None,
+    spacing_deg: float | None = None,
+    grid_type: str = "triangular",
 ) -> np.ndarray:
-    """Build an undirected k-nearest-neighbor graph from site coordinates.
+    """Generate regularly spaced grid nodes covering a coordinate bounding box.
 
     Parameters
     ----------
-    site_coords : np.ndarray
-        `S x 2` site coordinates.
-    k : int, optional
-        Number of nearest neighbors per node.
-    project_to : str | CRS | None, optional
-        Optional projection CRS used before nearest-neighbor search.
-    coord_order : str, optional
-        Coordinate order of `site_coords`.
-    coords_crs : str | CRS | None, optional
-        CRS of `site_coords`.
+    sample_coords : np.ndarray
+        `N x 2` sample coordinates in `lat, lon`.
+    spacing_km : float | None, optional
+        Approximate spacing in kilometers.
+    spacing_deg : float | None, optional
+        Spacing in degrees. Provide exactly one of `spacing_km` or `spacing_deg`.
+    grid_type : str, optional
+        `"triangular"` for staggered rows or `"rect"` for a regular lattice.
 
     Returns
     -------
     np.ndarray
-        `E x 2` undirected edge list with sorted node indices.
+        `G x 2` grid node coordinates in `lat, lon`.
     """
-    if k < 1:
-        raise ValueError("k must be >= 1")
+    if spacing_km is None and spacing_deg is None:
+        raise ValueError("Provide spacing_km or spacing_deg.")
+    if spacing_km is not None and spacing_deg is not None:
+        raise ValueError("Provide only one of spacing_km or spacing_deg.")
 
-    coords = site_coords
-    if project_to is not None:
-        coords = project_coords(
-            site_coords, coord_order=coord_order, coords_crs=coords_crs, target_crs=project_to
-        )
+    if spacing_deg is None:
+        mean_lat = float(np.mean(sample_coords[:, 0]))
+        deg_lat = spacing_km / 111.0
+        deg_lon = spacing_km / (111.0 * np.cos(np.radians(mean_lat)))
+    else:
+        deg_lat = spacing_deg
+        deg_lon = spacing_deg
 
-    tree = cKDTree(coords)
-    dists, idx = tree.query(coords, k=k + 1)
+    lat_min, lon_min = np.min(sample_coords, axis=0)
+    lat_max, lon_max = np.max(sample_coords, axis=0)
 
-    edges = set()
-    for i in range(idx.shape[0]):
-        for j in idx[i, 1:]:
-            if i == j:
+    grid_type = grid_type.lower()
+    if grid_type == "triangular":
+        dx = deg_lon
+        dy = deg_lat * (np.sqrt(3.0) / 2.0)
+
+        lat_grid = np.arange(lat_min, lat_max + dy, dy)
+        rows = []
+        for r, lat in enumerate(lat_grid):
+            offset = 0.5 * dx if (r % 2 == 1) else 0.0
+            lon_start = lon_min + offset
+            lon_vals = np.arange(lon_start, lon_max + dx, dx)
+            if lon_start > lon_min:
+                lon_vals = np.concatenate(([lon_start - dx], lon_vals))
+            lon_vals = lon_vals[(lon_vals >= lon_min - 1e-9) & (lon_vals <= lon_max + 1e-9)]
+            if lon_vals.size == 0:
                 continue
-            a, b = (i, j) if i < j else (j, i)
-            edges.add((a, b))
+            rows.append(np.column_stack([np.full_like(lon_vals, lat), lon_vals]))
 
-    edge_index = np.array(sorted(edges), dtype=np.int64)
-    return edge_index
+        nodes = np.vstack(rows) if rows else np.empty((0, 2), dtype=np.float64)
+    elif grid_type == "rect":
+        lat_grid = np.arange(lat_min, lat_max + deg_lat, deg_lat)
+        lon_grid = np.arange(lon_min, lon_max + deg_lon, deg_lon)
+        grid_lat, grid_lon = np.meshgrid(lat_grid, lon_grid, indexing="ij")
+        nodes = np.column_stack([grid_lat.ravel(), grid_lon.ravel()])
+    else:
+        raise ValueError("grid_type must be 'triangular' or 'rect'")
+
+    return nodes
 
 
 def build_delaunay_graph(
@@ -199,13 +474,38 @@ def build_delaunay_graph(
     return edge_index
 
 
+def _filter_long_mesh_edges(
+    mesh_coords: np.ndarray,
+    edge_index: np.ndarray,
+    max_ratio: float = 1.25,
+) -> np.ndarray:
+    """Drop Delaunay edges that are much longer than the nominal mesh step.
+
+    The nominal step is estimated from the shortest positive edge length in the
+    candidate graph, which corresponds to the local mesh spacing for the regular
+    grids used here.
+    """
+    if edge_index.size == 0:
+        return edge_index
+
+    edge_lengths = haversine_km(
+        mesh_coords[edge_index[:, 0]],
+        mesh_coords[edge_index[:, 1]],
+    )
+    positive = edge_lengths[edge_lengths > 0.0]
+    if positive.size == 0:
+        return edge_index
+
+    nominal_step = float(np.min(positive))
+    keep = edge_lengths <= (nominal_step * max_ratio)
+    return edge_index[keep]
+
+
 def build_dense_mesh_graph(
     coords_list: list[np.ndarray],
     spacing_km: float | None = 50.0,
     spacing_deg: float | None = None,
     grid_type: str = "triangular",
-    mesh_graph_type: str = "delaunay",
-    k: int = 6,
     project_to: str | CRS | None = None,
     coord_order: str = "latlon",
     coords_crs: str | CRS | None = "EPSG:4326",
@@ -225,10 +525,6 @@ def build_dense_mesh_graph(
         Mesh node spacing in degrees.
     grid_type : str, optional
         Node layout type, `"triangular"` or `"rect"`.
-    mesh_graph_type : str, optional
-        Edge construction type, `"delaunay"` or `"knn"`.
-    k : int, optional
-        `k` used when `mesh_graph_type="knn"`.
     project_to : str | CRS | None, optional
         Optional projection CRS used for graph construction.
     coord_order : str, optional
@@ -344,24 +640,13 @@ def build_dense_mesh_graph(
     if mesh_coords.size == 0:
         raise ValueError("Mesh generation produced zero nodes. Check bbox/buffer/grid spacing.")
 
-    mesh_graph_type = mesh_graph_type.lower()
-    if mesh_graph_type == "delaunay":
-        edge_index = build_delaunay_graph(
-            mesh_coords,
-            project_to=project_to,
-            coord_order=coord_order,
-            coords_crs=coords_crs,
-        )
-    elif mesh_graph_type == "knn":
-        edge_index = build_knn_graph(
-            mesh_coords,
-            k=k,
-            project_to=project_to,
-            coord_order=coord_order,
-            coords_crs=coords_crs,
-        )
-    else:
-        raise ValueError("mesh_graph_type must be 'delaunay' or 'knn'")
+    edge_index = build_delaunay_graph(
+        mesh_coords,
+        project_to=project_to,
+        coord_order=coord_order,
+        coords_crs=coords_crs,
+    )
+    edge_index = _filter_long_mesh_edges(mesh_coords, edge_index)
 
     return mesh_coords, edge_index
 

@@ -1,18 +1,14 @@
 # Multi-species resistance prototype
 
-Minimal Python prototype for learning shared and species-specific migration resistance on spatial graphs from SNP data. This implements a neural, FEEMS-style resistance model with a shared edge-resistance network plus per-species deviation heads.
+Minimal Python prototype for learning shared and species-specific migration resistance on spatial graphs from SNP data.
 
 ## What this does
-- Aggregates individual genotypes to site-level allele means
-- Builds a kNN graph per species from site coordinates
-- Learns shared and species-specific edge resistances from environmental differences
-- Fits genetic distance as a linear function of effective resistance
-
-This is a minimal starting point. The model is correct in spirit, but it does not include all FEEMS/EEMS refinements (e.g., spatial priors, adaptive meshes, or Bayesian inference).
+- Keeps species data at the observed sample level (`name`, `genotypes`, `sample_coords`)
+- Builds graph nodes/edges inside `build_species_graphs(...)` using either a shared dense mesh or a provided input graph
+- Samples environmental rasters at the exact graph nodes used for training
+- Learns shared and species-specific edge resistances and fits genetic distances via effective resistance
 
 ## Install (conda)
-
-Create a conda environment using conda-forge:
 
 ```bash
 conda env create -f environment.yml
@@ -25,131 +21,102 @@ conda activate multispecies-resistance
 python examples/minimal_prototype.py
 ```
 
-## Expected input format
+## Core data model
 
-For each species, you provide either:
-- **Site-based input**
-  - `genotypes`: N x M numpy array with values in {0,1,2}
-  - `sample_sites`: length-N array with integer site ids (0..S-1)
-  - `site_coords`: S x 2 array of lat/long
-  - `site_env`: S x K array of environmental variables at each site
-- **Sample-only input (pseudo-sites)**
-  - `genotypes`: N x M numpy array with values in {0,1,2}
-  - `sample_coords`: N x 2 array of lat/long
-  - `sample_env`: N x K array of environmental variables per sample (optional)
+`SpeciesData` now contains only sample-level information:
+- `name`: species name
+- `genotypes`: `N x M` genotype matrix
+- `sample_coords`: `N x 2` coordinates (`lat, lon`)
 
-The prototype can aggregate samples into pseudo-sites using a spatial grid, then compute pairwise site genetic distances, build a Delaunay graph, and train a shared resistance model with species-specific deviations.
+Graph-node assignment (and any sample-to-node remapping) is performed in `build_species_graphs(...)`.
 
-Pseudo-site aggregation is done by assigning each sample to its nearest grid node (regular lat/long grid), similar in spirit to FEEMS' assignment to nearest mesh node.
-
-## Projecting to a planar CRS
-
-For Delaunay triangulation, you can project lon/lat to a planar CRS first:
+## Building graphs
 
 ```python
-from multispecies_resistance.graph import build_delaunay_graph
+from multispecies_resistance.train import build_species_graphs
 
-edges = build_delaunay_graph(
-    site_coords,
-    project_to="EPSG:3857",
-    coord_order="latlon",
-    coords_crs="EPSG:4326",
+graphs, stats = build_species_graphs(
+    species_list,
+    mesh_grid_type="triangular",
+    standardize=True,
+)
+
+# SpeciesGraph object with node/edge geometry + sample coordinates
+ax, gdf_edges = graphs[0].plot(edge_feature_idx=0, basemap=True)
+```
+
+`build_species_graphs(...)` returns `SpeciesGraph` objects that include:
+- graph geometry (`node_coords`, `edge_index`)
+- edge covariates (`edge_features`)
+- original sample locations (`sample_coords`)
+- pairwise training targets (`pair_i`, `pair_j`, `pair_dist`)
+
+## GeoTIFF environmental sampling (inside graph build)
+
+Pass raster inputs directly to `build_species_graphs(...)`:
+
+```python
+graphs, stats = build_species_graphs(
+    species_list,
+    raster_paths=["/path/to/env1.tif", "/path/to/env2.tif"],
+    raster_fill_method="nearest",
+    standardize=True,
 )
 ```
 
-## GeoTIFF environmental sampling
-
-Use the raster sampler to extract environmental covariates for pseudo-sites:
+You can also provide a raster directory:
 
 ```python
-from multispecies_resistance.data import build_pseudosites
-from multispecies_resistance.raster import sample_rasters_for_sites
-
-site_coords, sample_sites, site_genotypes, site_counts, _ = build_pseudosites(
-    sample_coords,
-    genotypes,
-    spacing_km=80.0,
-)
-
-site_env, env_names = sample_rasters_for_sites(
-    ["/path/to/env1.tif", "/path/to/env2.tif"],
-    site_coords,
-    coord_order="latlon",
-    coords_crs="EPSG:4326",
+graphs, stats = build_species_graphs(
+    species_list,
+    raster_root="/path/to/rasters",
+    raster_pattern="*.tif",
+    raster_recursive=True,
 )
 ```
 
-See `notebooks/example_geotiff_pseudosites.ipynb` for a full walkthrough.
-See `notebooks/pedic_example.ipynb` for a PEDIC FEEMS dataset demo.
-
-### Raster stack convenience class
+## WorldClim / BioClim helper
 
 ```python
-from multispecies_resistance.raster import RasterStack
+from multispecies_resistance.climate import download_climate_layers
 
-with RasterStack(["/path/to/elev.tif", "/path/to/bioclim.tif"], fill_method="nearest") as stack:
-    site_env, env_names = stack.sample_points(site_coords)
-```
-
-`fill_method` supports:
-- `nan`: keep nodata as NaN
-- `mean`: fill with per-band mean
-- `nearest`: fill from nearest valid pixel (slower for large rasters)
-
-### Loading a raster stack from a directory
-
-```python
-from multispecies_resistance.raster import open_raster_stack
-
-stack, paths = open_raster_stack("/path/to/rasters", pattern="*.tif", recursive=True)
-try:
-    site_env, env_names = stack.sample_points(site_coords)
-finally:
-stack.close()
-```
-
-## WorldClim / BioClim sampling
-
-Download and cache WorldClim/BioClim layers, then sample by site coordinates:
-
-```python
-from multispecies_resistance.climate import sample_climate_for_sites
-
-site_env, env_names, raster_paths = sample_climate_for_sites(
-    site_coords,
-    source="bioclim",              # "bioclim" or "worldclim"
-    variables=["bio1", "bio12"],   # None -> all available layers for downloaded groups
+raster_paths = download_climate_layers(
+    source="bioclim",
+    variables=["bio1", "bio12"],
     resolution="2.5m",
-    cache_dir="~/.cache/multispecies_resistance/climate",
+)
+
+graphs, stats = build_species_graphs(
+    species_list,
+    raster_paths=raster_paths,
 )
 ```
+
+Pass `input_graph="/path/to/graph.gml"` when you want to use a provided shared graph instead of the default dense mesh.
+When `input_graph` is omitted and `mesh_spacing_km=None` (the default), the mesh spacing is chosen automatically from nearest-neighbor sample distances.
 
 ## PEDIC FEEMS loader
 
-If your files are in `/Users/isaac/src/meems/pedic_feems_files` and follow the
-`<name>_feems_coords.txt` and `<name>_feems_genos.npy` convention:
+`load_pedic_species(...)` now only loads sample-level inputs:
 
 ```python
 from multispecies_resistance.io import load_pedic_species
 
-species_list, env_names = load_pedic_species(
+species_list = load_pedic_species(
     "/Users/isaac/src/meems/pedic_feems_files",
-    spacing_km=80.0,
-    raster_root="/path/to/rasters",
-    raster_pattern="*.tif",
-    raster_fill_method="nearest",
     mmap_mode="r",
 )
 ```
 
-## Key files
-- `src/multispecies_resistance/data.py` data aggregation and distance computation
-- `src/multispecies_resistance/graph.py` kNN graph and edge features
-- `src/multispecies_resistance/model.py` neural resistance model
-- `src/multispecies_resistance/train.py` training loop
-- `examples/minimal_prototype.py` synthetic example
+Then build graphs (and optionally sample rasters) in `build_species_graphs(...)`.
 
-## Next steps
-- Replace the synthetic data with your real species data
-- Add cross-validation and a holdout evaluation scheme
-- Add map rendering from learned resistances (e.g., rasterize or interpolate)
+## Notebooks
+- `notebooks/pedic_example.ipynb`: PEDIC FEEMS workflow with climate rasters sampled in graph build
+- `notebooks/example_geotiff_pseudosites.ipynb`: sample-level workflow using synthetic raster input
+
+## Key files
+- `src/multispecies_resistance/data.py`: sample-level species container and genotype aggregation
+- `src/multispecies_resistance/graph.py`: graph construction and edge feature utilities
+- `src/multispecies_resistance/train.py`: graph dataset construction + training loop
+- `src/multispecies_resistance/model.py`: neural resistance model
+- `src/multispecies_resistance/io.py`: PEDIC sample-level loader

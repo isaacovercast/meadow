@@ -6,6 +6,7 @@
 Downloads and extracts requested climate raster groups to a local cache and reuses existing cached files by default.
 
 Parameters:
+
 - `source`: `"bioclim"` or `"worldclim"`.
 - `variables`: requested variable/group names (for example `bio12`, `tavg_07`, `bio`, `tavg`).
 - `resolution`: WorldClim resolution (`"30s"`, `"2.5m"`, `"5m"`, `"10m"`).
@@ -15,12 +16,14 @@ Parameters:
 - `timeout`: download timeout in seconds.
 
 Returns:
+
 - `raster_paths`: list of resolved cached GeoTIFF paths in deterministic order.
 
 ## `sample_climate_for_sites(site_coords, source="bioclim", variables=None, resolution="2.5m", cache_dir="~/.cache/multispecies_resistance/climate", coord_order="latlon", coords_crs="EPSG:4326", fill_method="nearest", force_download=False, base_url=None, timeout=120)`
 Downloads climate layers if needed, samples them at provided coordinates, and optionally subsets to requested variables.
 
 Parameters:
+
 - `site_coords`: `N x 2` site coordinates.
 - `source`: `"bioclim"` or `"worldclim"`.
 - `variables`: requested variable/group names; `None` keeps all downloaded layers.
@@ -34,6 +37,7 @@ Parameters:
 - `timeout`: download timeout in seconds.
 
 Returns:
+
 - `site_env`: `N x K` sampled environmental matrix.
 - `env_names`: variable names aligned to `site_env` columns.
 - `raster_paths`: raster files used during sampling.

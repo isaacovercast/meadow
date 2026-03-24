@@ -1,6 +1,6 @@
 # I/O Utilities
 
-`multispecies_resistance.io` provides dataset loading helpers for PEDIC FEEMS-style files and optional raster covariate sampling. It is the main entrypoint for constructing `SpeciesData` objects directly from files on disk.
+`multispecies_resistance.io` provides sample-level loading for PEDIC FEEMS-style files.
 
 ## PEDIC File Convention
 Each species should include:
@@ -11,26 +11,27 @@ Each species should include:
 Finds species names with both required PEDIC files present.
 
 Parameters:
+
 - `root`: directory containing PEDIC files.
 
 Returns:
+
 - `names`: sorted species names with complete file pairs.
 
-## `load_pedic_species(...)`
-Loads one or more species, builds pseudo-sites, and optionally samples site-level raster covariates.
+## `load_pedic_species(root, species_names=None, mmap_mode=None)`
+Loads one or more PEDIC species as sample-level `SpeciesData` records.
+
+Behavior:
+- reads sample coordinates and genotypes,
+- converts coordinates from `lon,lat` to `lat,lon`,
+- returns `SpeciesData(name, genotypes, sample_coords)` objects.
 
 Parameters:
+
 - `root`: directory containing PEDIC files.
-- `species_names`: explicit species list (uses all if omitted).
-- `spacing_km` / `spacing_deg`: pseudo-site spacing passed to `build_pseudosites`.
-- `raster_paths`: explicit rasters to sample for site covariates.
-- `raster_root`: raster directory/glob root when `raster_paths` is omitted.
-- `raster_pattern`: glob pattern for raster discovery.
-- `raster_recursive`: recursive raster search toggle.
-- `coords_crs`: CRS of coordinates for raster sampling.
-- `raster_fill_method`: nodata fill mode (`"nan"`, `"mean"`, `"nearest"`).
+- `species_names`: optional subset of species names.
 - `mmap_mode`: optional NumPy memory-map mode for genotype loading.
 
 Returns:
-- `species_list`: list of `SpeciesData` entries.
-- `env_names`: environmental feature names from sampled rasters.
+
+- `species_list`: list of sample-level `SpeciesData` records.

@@ -32,18 +32,18 @@
   <text x="58" y="150" class="h">1) Inputs Per Species</text>
   <text x="58" y="176" class="b">- Genotypes: N x M (0/1/2 ALT counts)</text>
   <text x="58" y="198" class="b">- Sample coordinates (lat/lon)</text>
-  <text x="58" y="220" class="b">- Optional environment covariates</text>
+  <text x="58" y="220" class="b">- Species name</text>
   <text x="58" y="254" class="mono">load_pedic_species(...)</text>
-  <text x="58" y="276" class="mono">sample_rasters_for_sites(...)</text>
-  <text x="58" y="298" class="mono">RasterStack.sample_points(...)</text>
+  <text x="58" y="276" class="mono">SpeciesData(name, genotypes, sample_coords)</text>
+  <text x="58" y="298" class="mono">sample-level records only</text>
 
-  <!-- Pseudosites -->
+  <!-- Node assignment -->
   <rect x="370" y="120" width="310" height="220" class="boxBlue"/>
-  <text x="388" y="150" class="h">2) Pseudo-Site Aggregation</text>
-  <text x="388" y="176" class="b">Assign each sample to nearest grid node</text>
-  <text x="388" y="198" class="b">(triangular or rectangular grid)</text>
-  <text x="388" y="220" class="b">Compute site-level genotype means</text>
-  <text x="388" y="254" class="mono">build_pseudosites(...)</text>
+  <text x="388" y="150" class="h">2) Node Assignment (in graph build)</text>
+  <text x="388" y="176" class="b">input_graph: nearest-node mapping to provided graph</text>
+  <text x="388" y="198" class="b">default: nearest-node mapping to shared dense mesh</text>
+  <text x="388" y="220" class="b">Aggregate genotypes after assignment</text>
+  <text x="388" y="254" class="mono">build_species_graphs(...)</text>
   <text x="388" y="276" class="mono">aggregate_site_genotypes(...)</text>
   <text x="388" y="298" class="mono">pairwise_site_distance(...)</text>
 
@@ -51,12 +51,12 @@
   <rect x="720" y="120" width="330" height="260" class="boxGreen"/>
   <text x="738" y="150" class="h">3) Graph Construction</text>
   <text x="738" y="176" class="b">Choose one mode in build_species_graphs(...):</text>
-  <text x="738" y="202" class="b">- delaunay / knn (per-species graph)</text>
-  <text x="738" y="224" class="b">- dense_mesh (shared graph across species)</text>
-  <text x="738" y="246" class="b">- input_graph (.gml) shared global graph</text>
+  <text x="738" y="202" class="b">- default shared dense mesh across species</text>
+  <text x="738" y="224" class="b">- input_graph (.gml) shared global graph</text>
+  <text x="738" y="246" class="b">mesh_grid_type controls the mesh layout</text>
   <text x="738" y="272" class="b">bbox: square / convex_hull / polygon file</text>
   <text x="738" y="304" class="mono">edge_features(...)</text>
-  <text x="738" y="326" class="mono">SpeciesGraphData: edge_index, node_coords, pairs</text>
+  <text x="738" y="326" class="mono">SpeciesGraph: edge_index, node_coords, sample_coords, pairs</text>
 
   <!-- Training -->
   <rect x="1080" y="120" width="280" height="300" class="boxAmber"/>
@@ -88,7 +88,7 @@
   <text x="58" y="488" class="b">- Species-specific edge resistance maps</text>
   <text x="58" y="510" class="b">- Shared resistance component</text>
   <text x="58" y="532" class="b">- Optional rasterized shared surface</text>
-  <text x="58" y="566" class="mono">plot_species_resistance(...)</text>
+  <text x="58" y="566" class="mono">SpeciesGraph.plot(edge_feature_idx=...)</text>
   <text x="58" y="588" class="mono">plot_multi_edge_resistance(...)</text>
   <text x="58" y="610" class="mono">overlay_stat = mean | std</text>
   <text x="58" y="632" class="mono">plot_shared_resistance(...)</text>

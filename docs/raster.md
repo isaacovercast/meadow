@@ -6,6 +6,7 @@
 Samples one raster file at coordinate points.
 
 Parameters:
+
 - `raster_path`: raster file path.
 - `coords`: `N x 2` query coordinates.
 - `coord_order`: coordinate order (`"latlon"` or `"lonlat"`).
@@ -13,6 +14,7 @@ Parameters:
 - `fill_method`: nodata handling (`"nan"`, `"mean"`, `"nearest"`).
 
 Returns:
+
 - `values`: `N x B` sampled values.
 - `band_names`: list of raster band names.
 
@@ -20,6 +22,7 @@ Returns:
 Samples multiple rasters and concatenates all bands into one feature matrix.
 
 Parameters:
+
 - `raster_paths`: iterable of raster file paths.
 - `site_coords`: `N x 2` coordinate array.
 - `coord_order`: coordinate order (`"latlon"` or `"lonlat"`).
@@ -27,6 +30,7 @@ Parameters:
 - `fill_method`: nodata handling (`"nan"`, `"mean"`, `"nearest"`).
 
 Returns:
+
 - `site_env`: `N x K` concatenated sampled matrix.
 - `env_names`: list of concatenated feature names.
 
@@ -34,17 +38,20 @@ Returns:
 Resolves path inputs from files, directories, or glob-like patterns.
 
 Parameters:
+
 - `raster_paths`: one path or iterable of paths/patterns.
 - `pattern`: filename pattern used when directories are supplied.
 - `recursive`: whether directory search is recursive.
 
 Returns:
+
 - `paths`: sorted unique raster paths.
 
 ## `open_raster_stack(...)`
 Resolves raster paths and returns an open `RasterStack` plus resolved paths.
 
 Parameters:
+
 - `raster_paths`: one path or iterable of path inputs.
 - `pattern`: filename pattern for directory inputs.
 - `recursive`: recursive directory search toggle.
@@ -53,6 +60,7 @@ Parameters:
 - `fill_method`: default nodata fill mode.
 
 Returns:
+
 - `stack`: open `RasterStack` instance.
 - `paths`: resolved raster paths used by the stack.
 
@@ -61,6 +69,7 @@ Reusable context-manager wrapper for repeated point sampling across multiple ras
 
 ### `RasterStack(raster_paths, coord_order="latlon", coords_crs="EPSG:4326", fill_method="nan")`
 Parameters:
+
 - `raster_paths`: raster files to open.
 - `coord_order`: default coordinate order for sampling.
 - `coords_crs`: default coordinate CRS for sampling.
@@ -70,10 +79,12 @@ Parameters:
 Samples all open rasters at query points.
 
 Parameters:
+
 - `coords`: `N x 2` coordinate array.
 - `fill_method`: optional per-call override of nodata handling.
 
 Returns:
+
 - `env`: `N x K` concatenated sampled matrix.
 - `env_names`: feature names aligned to columns in `env`.
 

@@ -1,190 +1,273 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List
+from pathlib import Path
+from typing import Iterable, List
 
 import numpy as np
 import torch
 
-from multispecies_resistance.model import MultiSpeciesResistanceModel
-from multispecies_resistance.data import aggregate_site_genotypes, pairwise_site_distance
+from multispecies_resistance.data import SpeciesData, aggregate_site_genotypes, pairwise_site_distance
 from multispecies_resistance.graph import (
-    build_delaunay_graph,
+    SpeciesGraph,
     build_dense_mesh_graph,
-    build_knn_graph,
     edge_features,
+    project_coords,
     standardize_features,
 )
+from multispecies_resistance.model import MultiSpeciesResistanceModel
+from multispecies_resistance.raster import RasterStack, resolve_raster_paths
 
 
 torch.set_default_dtype(torch.float64)
 
 
-@dataclass
-class SpeciesGraphData:
-    """Per-species graph features and pairwise distance targets used for training."""
+def _resolved_raster_list(
+    raster_paths: Iterable[str | Path] | None,
+    raster_root: str | Path | None,
+    raster_pattern: str,
+    raster_recursive: bool,
+) -> list[Path] | None:
+    if raster_paths is None and raster_root is not None:
+        raster_paths = resolve_raster_paths(
+            raster_root,
+            pattern=raster_pattern,
+            recursive=raster_recursive,
+        )
+    elif raster_paths is not None:
+        raster_paths = resolve_raster_paths(
+            raster_paths,
+            pattern=raster_pattern,
+            recursive=raster_recursive,
+        )
 
-    name: str
-    edge_index: np.ndarray
-    edge_features: np.ndarray
-    node_coords: np.ndarray
-    pair_i: np.ndarray
-    pair_j: np.ndarray
-    pair_dist: np.ndarray
-    num_nodes: int
-    val_pair_i: np.ndarray | None = None
-    val_pair_j: np.ndarray | None = None
-    val_pair_dist: np.ndarray | None = None
+    if raster_paths is None:
+        return None
+
+    raster_paths = list(raster_paths)
+    if not raster_paths:
+        raise FileNotFoundError("No raster files found.")
+    return raster_paths
+
+
+def _sample_node_env(
+    raster_stack: RasterStack | None,
+    node_coords: np.ndarray,
+    num_nodes: int,
+) -> np.ndarray:
+    if raster_stack is None:
+        return np.zeros((num_nodes, 0), dtype=np.float64)
+    node_env, _ = raster_stack.sample_points(node_coords)
+    return node_env
+
+
+def choose_mesh_spacing_km(
+    species_list: List[SpeciesData],
+    project_to: str = "EPSG:3857",
+    coord_order: str = "latlon",
+    coords_crs: str = "EPSG:4326",
+    quantile: float = 0.5,
+    scale_factor: float = 1.25,
+    min_spacing_km: float = 5.0,
+) -> float:
+    """Choose a mesh spacing from per-species nearest-neighbor sample distances.
+
+    The heuristic pools nearest-neighbor distances within each species,
+    summarizes them with a robust quantile, and then applies a modest
+    coarse-graining factor so the default mesh is slightly smoother than the
+    raw sample spacing.
+    """
+    from scipy.spatial import cKDTree
+
+    if not species_list:
+        raise ValueError("species_list is empty")
+    if not (0.0 < quantile <= 1.0):
+        raise ValueError("quantile must be in (0, 1].")
+    if scale_factor <= 0.0:
+        raise ValueError("scale_factor must be > 0.")
+    if min_spacing_km <= 0.0:
+        raise ValueError("min_spacing_km must be > 0.")
+
+    nn_km: list[np.ndarray] = []
+    for sp in species_list:
+        coords = np.asarray(sp.sample_coords, dtype=np.float64)
+        if coords.ndim != 2 or coords.shape[1] != 2:
+            raise ValueError(f"Species '{sp.name}' has invalid sample_coords shape.")
+        if coords.shape[0] < 2:
+            continue
+
+        xy = project_coords(
+            coords,
+            coord_order=coord_order,
+            coords_crs=coords_crs,
+            target_crs=project_to,
+        )
+        tree = cKDTree(xy)
+        dists, _ = tree.query(xy, k=2)
+        nearest_m = np.asarray(dists[:, 1], dtype=np.float64)
+        nearest_km = nearest_m[np.isfinite(nearest_m) & (nearest_m > 0.0)] / 1000.0
+        if nearest_km.size > 0:
+            nn_km.append(nearest_km)
+
+    if not nn_km:
+        raise ValueError("Cannot auto-pick mesh spacing: need at least one species with >=2 distinct samples.")
+
+    pooled = np.concatenate(nn_km)
+    spacing_km = float(np.quantile(pooled, quantile) * scale_factor)
+    return max(spacing_km, min_spacing_km)
 
 
 def build_species_graphs(
-    species_list: List,
-    graph_type: str = "delaunay",
-    k: int = 6,
+    species_list: List[SpeciesData],
     project_to: str | None = "EPSG:3857",
     coord_order: str = "latlon",
     coords_crs: str = "EPSG:4326",
     standardize: bool = True,
-    mesh_spacing_km: float | None = 80.0,
+    mesh_spacing_km: float | None = None,
     mesh_spacing_deg: float | None = None,
     mesh_grid_type: str = "triangular",
-    mesh_graph_type: str = "delaunay",
-    mesh_k: int = 6,
-    mesh_coords: np.ndarray | None = None,
     mesh_env: np.ndarray | None = None,
     buffer_km: float = 0.0,
     bbox: str | None = "square",
     bbox_file: str | None = None,
     input_graph: str | None = None,
-) -> tuple[List[SpeciesGraphData], dict | None]:
-    """Convert species inputs into graph-based training datasets.
+    raster_paths: Iterable[str | Path] | None = None,
+    raster_root: str | Path | None = None,
+    raster_pattern: str = "*.tif",
+    raster_recursive: bool = True,
+    raster_fill_method: str = "nan",
+    raster_coord_order: str = "latlon",
+    raster_coords_crs: str = "EPSG:4326",
+) -> tuple[List[SpeciesGraph], dict | None]:
+    """Convert sample-level species inputs into graph-based training datasets.
 
-    Parameters
-    ----------
-    species_list : List
-        Sequence of species records with site coordinates, assignments, and genotypes.
-    graph_type : str, optional
-        Graph strategy: `"delaunay"`, `"knn"`, or `"dense_mesh"`.
-    k : int, optional
-        Neighbor count when `graph_type="knn"`.
-    project_to : str | None, optional
-        Optional projection CRS for graph construction.
-    coord_order : str, optional
-        Coordinate order for input site coordinates.
-    coords_crs : str, optional
-        CRS of input coordinates.
-    standardize : bool, optional
-        Whether to standardize edge features across all species.
-    mesh_spacing_km : float | None, optional
-        Shared mesh spacing in kilometers for dense-mesh mode.
-    mesh_spacing_deg : float | None, optional
-        Shared mesh spacing in degrees for dense-mesh mode.
-    mesh_grid_type : str, optional
-        Grid shape for dense-mesh node generation.
-    mesh_graph_type : str, optional
-        Graph builder for dense mesh (`"delaunay"` or `"knn"`).
-    mesh_k : int, optional
-        `k` for dense-mesh knn graphs.
-    mesh_coords : np.ndarray | None, optional
-        Precomputed shared mesh coordinates.
-    mesh_env : np.ndarray | None, optional
-        Environmental covariates defined on `mesh_coords`.
-    buffer_km : float, optional
-        Bounding-area buffer before mesh generation.
-    bbox : str | None, optional
-        Mesh clipping mode.
-    bbox_file : str | None, optional
-        Polygon file used for mesh clipping.
-    input_graph : str | None, optional
-        Optional path to a global GML graph overriding graph construction.
-
-    Returns
-    -------
-    tuple[List[SpeciesGraphData], dict | None]
-        Built graph objects and optional standardization statistics (`mean`, `std`).
+    When `input_graph` is provided, samples are assigned to the nearest `.gml`
+    graph node. Otherwise a shared dense mesh is built from species sample
+    coordinates and samples are assigned to the nearest mesh node. If
+    `mesh_spacing_km` is `None`, a spacing is chosen automatically from
+    nearest-neighbor sample distances.
+    Environmental covariates are sampled at graph nodes when raster inputs are
+    provided.
     """
-    graphs: List[SpeciesGraphData] = []
+    if not species_list:
+        raise ValueError("species_list is empty")
+
+    graphs: List[SpeciesGraph] = []
     all_feats = []
 
-    graph_type = graph_type.lower()
-    if input_graph is not None:
-        import networkx as nx
+    resolved_rasters = _resolved_raster_list(
+        raster_paths,
+        raster_root,
+        raster_pattern,
+        raster_recursive,
+    )
 
-        gml = nx.read_gml(input_graph)
-        nodes = list(gml.nodes())
-        node_coords = []
-        node_index = {}
-        for idx, node in enumerate(nodes):
-            data = gml.nodes[node]
-            if "lat" in data and "lon" in data:
-                lat = float(data["lat"])
-                lon = float(data["lon"])
-            elif "y" in data and "x" in data:
-                lat = float(data["y"])
-                lon = float(data["x"])
+    raster_stack: RasterStack | None = None
+    if resolved_rasters is not None:
+        raster_stack = RasterStack(
+            resolved_rasters,
+            coord_order=raster_coord_order,
+            coords_crs=raster_coords_crs,
+            fill_method=raster_fill_method,
+        )
+
+    try:
+        if input_graph is not None:
+            import networkx as nx
+            from scipy.spatial import cKDTree
+
+            gml = nx.read_gml(input_graph)
+            nodes = list(gml.nodes())
+            node_coords = []
+            node_index = {}
+            for idx, node in enumerate(nodes):
+                data = gml.nodes[node]
+                if "lat" in data and "lon" in data:
+                    lat = float(data["lat"])
+                    lon = float(data["lon"])
+                elif "y" in data and "x" in data:
+                    lat = float(data["y"])
+                    lon = float(data["x"])
+                elif "pos" in data:
+                    lonlat = np.fromstring(data["pos"].strip('[]'), sep=' ')
+                    lon = lonlat[0]
+                    lat = lonlat[1]
+                else:
+                    raise ValueError("GML nodes must have (lat, lon) or (x, y) attributes.")
+                node_coords.append([lat, lon])
+                node_index[node] = idx
+
+            node_coords = np.asarray(node_coords, dtype=np.float64)
+            edge_index = []
+            for u, v in gml.edges():
+                edge_index.append((node_index[u], node_index[v]))
+            edge_index = np.asarray(edge_index, dtype=np.int64)
+
+            if raster_stack is not None and mesh_env is not None:
+                raise ValueError("Provide either raster inputs or mesh_env, not both.")
+
+            if raster_stack is not None:
+                node_env = _sample_node_env(raster_stack, node_coords, node_coords.shape[0])
+            elif mesh_env is not None:
+                if mesh_env.shape[0] != node_coords.shape[0]:
+                    raise ValueError("mesh_env must have the same number of rows as graph nodes.")
+                node_env = mesh_env
             else:
-                raise ValueError("GML nodes must have (lat, lon) or (x, y) attributes.")
-            node_coords.append([lat, lon])
-            node_index[node] = idx
+                node_env = np.zeros((node_coords.shape[0], 0), dtype=np.float64)
 
-        node_coords = np.asarray(node_coords, dtype=np.float64)
-        edge_index = []
-        for u, v in gml.edges():
-            edge_index.append((node_index[u], node_index[v]))
-        edge_index = np.asarray(edge_index, dtype=np.int64)
+            shared_edge_features = edge_features(node_coords, node_env, edge_index)
+            tree = cKDTree(node_coords)
 
-        if mesh_env is None:
-            mesh_env = np.zeros((node_coords.shape[0], 0), dtype=np.float64)
-        elif mesh_env.shape[0] != node_coords.shape[0]:
-            raise ValueError("mesh_env must have the same number of rows as GML nodes.")
-        shared_edge_features = edge_features(node_coords, mesh_env, edge_index)
+            for sp in species_list:
+                _, sample_sites = tree.query(sp.sample_coords, k=1)
+                sample_sites = sample_sites.astype(np.int64)
 
-        from scipy.spatial import cKDTree
+                site_genos, site_counts = aggregate_site_genotypes(
+                    sp.genotypes,
+                    sample_sites,
+                    num_sites=node_coords.shape[0],
+                    allow_empty=True,
+                )
+                valid = np.where(site_counts > 0)[0]
+                if valid.size < 2:
+                    raise ValueError(f"Species '{sp.name}' has <2 occupied graph nodes.")
 
-        tree = cKDTree(node_coords)
+                dist = pairwise_site_distance(site_genos[valid])
+                pair_i, pair_j = np.triu_indices(dist.shape[0], k=1)
+                pair_dist = dist[pair_i, pair_j]
+                pair_i = valid[pair_i]
+                pair_j = valid[pair_j]
 
-        for sp in species_list:
-            _, site_to_mesh = tree.query(sp.site_coords, k=1)
-            sample_sites = site_to_mesh[sp.sample_sites]
+                graph = SpeciesGraph(
+                    name=sp.name,
+                    edge_index=edge_index,
+                    edge_features=shared_edge_features.copy(),
+                    node_coords=node_coords,
+                    sample_coords=sp.sample_coords,
+                    pair_i=pair_i,
+                    pair_j=pair_j,
+                    pair_dist=pair_dist,
+                    num_nodes=node_coords.shape[0],
+                )
+                graphs.append(graph)
+                all_feats.append(shared_edge_features)
 
-            site_genos, site_counts = aggregate_site_genotypes(
-                sp.genotypes, sample_sites, num_sites=node_coords.shape[0], allow_empty=True
-            )
-            valid = np.where(site_counts > 0)[0]
-            if valid.size < 2:
-                raise ValueError(f"Species '{sp.name}' has <2 occupied mesh nodes.")
+        else:
+            from scipy.spatial import cKDTree
 
-            dist = pairwise_site_distance(site_genos[valid])
-            pair_i, pair_j = np.triu_indices(dist.shape[0], k=1)
-            pair_dist = dist[pair_i, pair_j]
-            pair_i = valid[pair_i]
-            pair_j = valid[pair_j]
+            if mesh_spacing_km is None and mesh_spacing_deg is None:
+                mesh_spacing_km = choose_mesh_spacing_km(
+                    species_list,
+                    project_to=project_to or "EPSG:3857",
+                    coord_order=coord_order,
+                    coords_crs=coords_crs,
+                )
 
-            graph = SpeciesGraphData(
-                name=sp.name,
-                edge_index=edge_index,
-                edge_features=shared_edge_features.copy(),
-                node_coords=node_coords,
-                pair_i=pair_i,
-                pair_j=pair_j,
-                pair_dist=pair_dist,
-                num_nodes=node_coords.shape[0],
-            )
-            graphs.append(graph)
-            all_feats.append(shared_edge_features)
-
-        # skip standardization of mesh_env features, handled later
-
-    elif graph_type == "dense_mesh":
-        if mesh_coords is None:
-            coords_list = [sp.site_coords for sp in species_list]
+            coords_list = [sp.sample_coords for sp in species_list]
             mesh_coords, edge_index = build_dense_mesh_graph(
                 coords_list,
                 spacing_km=mesh_spacing_km,
                 spacing_deg=mesh_spacing_deg,
                 grid_type=mesh_grid_type,
-                mesh_graph_type=mesh_graph_type,
-                k=mesh_k,
                 project_to=project_to,
                 coord_order=coord_order,
                 coords_crs=coords_crs,
@@ -192,104 +275,59 @@ def build_species_graphs(
                 bbox=bbox,
                 bbox_file=bbox_file,
             )
-        else:
-            if mesh_graph_type == "knn":
-                edge_index = build_knn_graph(
-                    mesh_coords,
-                    k=mesh_k,
-                    project_to=project_to,
-                    coord_order=coord_order,
-                    coords_crs=coords_crs,
-                )
+
+            if raster_stack is not None and mesh_env is not None:
+                raise ValueError("Provide either raster inputs or mesh_env, not both.")
+
+            if raster_stack is not None:
+                node_env = _sample_node_env(raster_stack, mesh_coords, mesh_coords.shape[0])
+            elif mesh_env is not None:
+                if mesh_env.shape[0] != mesh_coords.shape[0]:
+                    raise ValueError("mesh_env must have the same number of rows as mesh_coords.")
+                node_env = mesh_env
             else:
-                edge_index = build_delaunay_graph(
-                    mesh_coords,
-                    project_to=project_to,
-                    coord_order=coord_order,
-                    coords_crs=coords_crs,
+                node_env = np.zeros((mesh_coords.shape[0], 0), dtype=np.float64)
+
+            shared_edge_features = edge_features(mesh_coords, node_env, edge_index)
+            tree = cKDTree(mesh_coords)
+
+            for sp in species_list:
+                _, sample_sites = tree.query(sp.sample_coords, k=1)
+                sample_sites = sample_sites.astype(np.int64)
+
+                site_genos, site_counts = aggregate_site_genotypes(
+                    sp.genotypes,
+                    sample_sites,
+                    num_sites=mesh_coords.shape[0],
+                    allow_empty=True,
                 )
+                valid = np.where(site_counts > 0)[0]
+                if valid.size < 2:
+                    raise ValueError(f"Species '{sp.name}' has <2 occupied mesh nodes.")
 
-        if mesh_env is None:
-            mesh_env = np.zeros((mesh_coords.shape[0], 0), dtype=np.float64)
+                dist = pairwise_site_distance(site_genos[valid])
+                pair_i, pair_j = np.triu_indices(dist.shape[0], k=1)
+                pair_dist = dist[pair_i, pair_j]
+                pair_i = valid[pair_i]
+                pair_j = valid[pair_j]
 
-        # Precompute shared edge features
-        shared_edge_features = edge_features(mesh_coords, mesh_env, edge_index)
-
-        from scipy.spatial import cKDTree
-
-        tree = cKDTree(mesh_coords)
-
-        for sp in species_list:
-            # Map each species site to nearest mesh node, then assign samples to mesh nodes
-            _, site_to_mesh = tree.query(sp.site_coords, k=1)
-            sample_sites = site_to_mesh[sp.sample_sites]
-
-            site_genos, site_counts = aggregate_site_genotypes(
-                sp.genotypes, sample_sites, num_sites=mesh_coords.shape[0], allow_empty=True
-            )
-            valid = np.where(site_counts > 0)[0]
-            if valid.size < 2:
-                raise ValueError(f"Species '{sp.name}' has <2 occupied mesh nodes.")
-
-            dist = pairwise_site_distance(site_genos[valid])
-            pair_i, pair_j = np.triu_indices(dist.shape[0], k=1)
-            pair_dist = dist[pair_i, pair_j]
-            pair_i = valid[pair_i]
-            pair_j = valid[pair_j]
-
-            graph = SpeciesGraphData(
-                name=sp.name,
-                edge_index=edge_index,
-                edge_features=shared_edge_features.copy(),
-                node_coords=mesh_coords,
-                pair_i=pair_i,
-                pair_j=pair_j,
-                pair_dist=pair_dist,
-                num_nodes=mesh_coords.shape[0],
-            )
-            graphs.append(graph)
-            all_feats.append(shared_edge_features)
-    else:
-        for sp in species_list:
-            site_genos, _ = aggregate_site_genotypes(
-                sp.genotypes, sp.sample_sites, num_sites=sp.num_sites()
-            )
-            dist = pairwise_site_distance(site_genos)
-
-            if graph_type == "delaunay":
-                edges = build_delaunay_graph(
-                    sp.site_coords,
-                    project_to=project_to,
-                    coord_order=coord_order,
-                    coords_crs=coords_crs,
+                graph = SpeciesGraph(
+                    name=sp.name,
+                    edge_index=edge_index,
+                    edge_features=shared_edge_features.copy(),
+                    node_coords=mesh_coords,
+                    sample_coords=sp.sample_coords,
+                    pair_i=pair_i,
+                    pair_j=pair_j,
+                    pair_dist=pair_dist,
+                    num_nodes=mesh_coords.shape[0],
                 )
-            elif graph_type == "knn":
-                edges = build_knn_graph(
-                    sp.site_coords,
-                    k=k,
-                    project_to=project_to,
-                    coord_order=coord_order,
-                    coords_crs=coords_crs,
-                )
-            else:
-                raise ValueError("graph_type must be 'delaunay', 'knn', or 'dense_mesh'")
+                graphs.append(graph)
+                all_feats.append(shared_edge_features)
 
-            feats = edge_features(sp.site_coords, sp.site_env, edges)
-            pair_i, pair_j = np.triu_indices(dist.shape[0], k=1)
-            pair_dist = dist[pair_i, pair_j]
-
-            graph = SpeciesGraphData(
-                name=sp.name,
-                edge_index=edges,
-                edge_features=feats,
-                node_coords=sp.site_coords,
-                pair_i=pair_i,
-                pair_j=pair_j,
-                pair_dist=pair_dist,
-                num_nodes=dist.shape[0],
-            )
-            graphs.append(graph)
-            all_feats.append(feats)
+    finally:
+        if raster_stack is not None:
+            raster_stack.close()
 
     stats = None
     if standardize and all_feats:
@@ -398,7 +436,7 @@ def split_pairs(
 
 
 def train_model(
-    species_graphs: List[SpeciesGraphData],
+    species_graphs: List[SpeciesGraph],
     hidden_dim: int = 32,
     lr: float = 1e-2,
     epochs: int = 200,
@@ -417,7 +455,7 @@ def train_model(
 
     Parameters
     ----------
-    species_graphs : List[SpeciesGraphData]
+    species_graphs : List[SpeciesGraph]
         Per-species graph features and pairwise targets.
     hidden_dim : int, optional
         Hidden width for model edge networks.

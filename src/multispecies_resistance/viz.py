@@ -467,7 +467,7 @@ def plot_multi_edge_resistance(
                 coords_plot = (
                     sample_coords_list[sp_idx]
                     if sample_coords_list is not None
-                    else sp.site_coords
+                    else sp.sample_coords
                 )
                 x_s, y_s, _ = _coords_for_plot(coords_plot)
                 xs_all.append(x_s)
@@ -497,7 +497,7 @@ def plot_multi_edge_resistance(
                 coords_plot = (
                     sample_coords_list[sp_idx]
                     if sample_coords_list is not None
-                    else sp.site_coords
+                    else sp.sample_coords
                 )
                 x_s, y_s, _ = _coords_for_plot(coords_plot)
                 ax.scatter(x_s, y_s, s=10, c="black", alpha=0.75, zorder=3)
@@ -534,7 +534,7 @@ def plot_multi_edge_resistance(
 
         ax_i = axes_arr[idx]
         coords_plot = (
-            sample_coords_list[idx] if sample_coords_list is not None else sp.site_coords
+            sample_coords_list[idx] if sample_coords_list is not None else sp.sample_coords
         )
         ax_i, gdf_i, fmap_i = plot_species_resistance(
             g.node_coords,
@@ -664,7 +664,7 @@ def plot_shared_resistance(
             explore=explore,
             explore_kwargs=explore_kwargs,
             show_sites=show_sites,
-            sample_coords=sp.site_coords if show_sites else None,
+            sample_coords=sp.sample_coords if show_sites else None,
         )
 
     import matplotlib.pyplot as plt
@@ -786,16 +786,16 @@ def plot_shared_resistance(
 
     if show_sites:
         if coord_order == "latlon":
-            y_s = sp.site_coords[:, 0]
-            x_s = sp.site_coords[:, 1]
+            y_s = sp.sample_coords[:, 0]
+            x_s = sp.sample_coords[:, 1]
         else:
-            x_s = sp.site_coords[:, 0]
-            y_s = sp.site_coords[:, 1]
+            x_s = sp.sample_coords[:, 0]
+            y_s = sp.sample_coords[:, 1]
         if basemap is not None and basemap is not False:
             from multispecies_resistance.graph import project_coords
 
             coords_s = project_coords(
-                sp.site_coords,
+                sp.sample_coords,
                 coord_order=coord_order,
                 coords_crs=coords_crs,
                 target_crs=basemap_crs,

@@ -9,18 +9,21 @@ The module defines a default resistance colormap (`edge_cmap`) derived from EEMS
 Plots site coordinates as a scatter map.
 
 Parameters:
+
 - `site_coords`: `N x 2` site coordinates in `lat, lon`.
 - `ax`: optional matplotlib axis.
 - `title`: optional plot title.
 - `alpha`: marker transparency.
 
 Returns:
+
 - `ax`: matplotlib axis with plotted sites.
 
 ## `plot_species_resistance(...)`
 Plots one graph's edge resistances as line segments.
 
 Parameters:
+
 - `site_coords`: `S x 2` node coordinates.
 - `edge_index`: `E x 2` edge list.
 - `edge_values`: optional edge values. If omitted, provide `model` and `edge_features`.
@@ -39,12 +42,14 @@ Parameters:
 - `sample_coords`: alternate point coordinates for overlays.
 
 Returns:
+
 - `(ax, gdf)` or `(ax, gdf, folium_map)` when `explore=True`.
 
 ## `plot_multi_edge_resistance(...)`
 Plots multiple species either as per-species subplots or as one aggregated overlay.
 
 Parameters:
+
 - `species_list`: species records.
 - `graphs`: per-species graph objects.
 - `model`: trained model.
@@ -60,6 +65,7 @@ Parameters:
 - `figsize`: base plot size.
 
 Returns:
+
 - Overlay mode: `(ax, gdf)` (plus map when `explore=True`).
 - Facet mode: `(axes, gdfs)` (plus maps when `explore=True`).
 
@@ -67,6 +73,7 @@ Returns:
 Plots the shared model component as colored edges or a rasterized interpolated surface.
 
 Parameters:
+
 - `species_list`, `graphs`, `model`: required plotting inputs.
 - `graph_index`: graph/species index used for geometry.
 - `cmap`, `basemap`, `basemap_crs`, `coord_order`, `coords_crs`: spatial rendering controls.
@@ -81,6 +88,7 @@ Parameters:
 - `show_sites`: overlay site points.
 
 Returns:
+
 - Edge mode: same output pattern as `plot_species_resistance`.
 - Raster mode: `(ax, surface)` or `(ax, surface, folium_map)` when `explore=True`.
 
@@ -88,9 +96,11 @@ Returns:
 Plots a heatmap of an effective resistance matrix.
 
 Parameters:
+
 - `R`: `N x N` matrix.
 - `ax`: optional axis.
 - `title`: optional title.
 
 Returns:
+
 - `ax`: matplotlib axis with matrix heatmap.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Tuple
 
 import numpy as np
@@ -363,6 +364,299 @@ def project_coords(
     return np.column_stack([xs, ys]).astype(np.float64)
 
 
+def _coords_to_latlon(
+    coords: np.ndarray,
+    coord_order: str = "latlon",
+    coords_crs: str | CRS | None = "EPSG:4326",
+) -> np.ndarray:
+    """Convert input coordinates into `lat, lon` order in EPSG:4326."""
+    if coords_crs is None:
+        raise ValueError("coords_crs is required for coordinate conversion")
+
+    lons, lats = _as_lon_lat(coords, coord_order)
+    src_crs = CRS.from_user_input(coords_crs)
+    dst_crs = CRS.from_user_input("EPSG:4326")
+    lon_out, lat_out = transform(src_crs, dst_crs, lons.tolist(), lats.tolist())
+    return np.column_stack([lat_out, lon_out]).astype(np.float64)
+
+
+def _cartesian_to_latlon(vertices: np.ndarray) -> np.ndarray:
+    """Convert 3D Cartesian points on a sphere into `lat, lon` coordinates."""
+    xyz = np.asarray(vertices, dtype=np.float64)
+    radius = np.linalg.norm(xyz, axis=1)
+    if np.any(radius <= 0.0):
+        raise ValueError("vertices must lie away from the origin")
+
+    x = xyz[:, 0] / radius
+    y = xyz[:, 1] / radius
+    z = np.clip(xyz[:, 2] / radius, -1.0, 1.0)
+    lat = np.degrees(np.arcsin(z))
+    lon = np.degrees(np.arctan2(y, x))
+    return np.column_stack([lat, lon]).astype(np.float64)
+
+
+def _edge_index_from_faces(faces: np.ndarray) -> np.ndarray:
+    """Build a unique undirected edge list from triangular face indices."""
+    face_array = np.asarray(faces, dtype=np.int64)
+    if face_array.ndim != 2 or face_array.shape[1] != 3:
+        raise ValueError("faces must have shape (F, 3)")
+
+    edges = np.vstack(
+        [
+            face_array[:, [0, 1]],
+            face_array[:, [1, 2]],
+            face_array[:, [0, 2]],
+        ]
+    )
+    edges = np.sort(edges, axis=1)
+    edges = np.unique(edges, axis=0)
+    keep = edges[:, 0] != edges[:, 1]
+    return edges[keep].astype(np.int64, copy=False)
+
+
+def _median_edge_length_km(node_coords: np.ndarray, edge_index: np.ndarray) -> float:
+    """Compute the median great-circle edge length for a graph."""
+    if edge_index.size == 0:
+        raise ValueError("edge_index is empty")
+    lengths = haversine_km(node_coords[edge_index[:, 0]], node_coords[edge_index[:, 1]])
+    positive = lengths[lengths > 0.0]
+    if positive.size == 0:
+        raise ValueError("edge_index does not contain positive-length edges")
+    return float(np.median(positive))
+
+
+@lru_cache(maxsize=None)
+def _icosphere_geometry(subdivisions: int) -> tuple[np.ndarray, np.ndarray]:
+    """Construct one cached icosphere and return vertices plus triangular faces."""
+    if subdivisions < 0:
+        raise ValueError("subdivisions must be >= 0")
+
+    try:
+        import trimesh
+    except ImportError as exc:
+        raise ImportError(
+            "trimesh is required for build_geodesic_mesh_graph(...). "
+            "Install it in the project environment before using this function."
+        ) from exc
+
+    mesh = trimesh.creation.icosphere(subdivisions=int(subdivisions), radius=1.0)
+    return (
+        np.asarray(mesh.vertices, dtype=np.float64),
+        np.asarray(mesh.faces, dtype=np.int64),
+    )
+
+
+@lru_cache(maxsize=None)
+def _geodesic_mesh_for_subdivision(subdivisions: int) -> tuple[np.ndarray, np.ndarray]:
+    """Build one cached geodesic mesh at a fixed subdivision level."""
+    vertices, faces = _icosphere_geometry(int(subdivisions))
+    node_coords = _cartesian_to_latlon(vertices)
+    edge_index = _edge_index_from_faces(faces)
+    return node_coords, edge_index
+
+
+def _choose_icosphere_subdivision_for_spacing(
+    spacing_km: float,
+    max_subdivisions: int = 7,
+) -> tuple[int, float]:
+    """Map a target edge spacing in kilometers to the closest icosphere level."""
+    if spacing_km <= 0.0:
+        raise ValueError("spacing_km must be > 0.")
+
+    candidates: list[tuple[float, int, float]] = []
+    for subdivisions in range(max_subdivisions + 1):
+        node_coords, edge_index = _geodesic_mesh_for_subdivision(subdivisions)
+        median_spacing = _median_edge_length_km(node_coords, edge_index)
+        candidates.append((abs(median_spacing - spacing_km), subdivisions, median_spacing))
+
+    _, best_subdivisions, best_spacing = min(candidates)
+    return int(best_subdivisions), float(best_spacing)
+
+
+def _spacing_km_from_deg(spacing_deg: float, mean_lat: float) -> float:
+    """Approximate a kilometer mesh spacing from a degree spacing."""
+    if spacing_deg <= 0.0:
+        raise ValueError("spacing_deg must be > 0.")
+
+    lat_km = spacing_deg * 111.0
+    lon_km = spacing_deg * 111.0 * max(np.cos(np.radians(mean_lat)), 1e-6)
+    return float(0.5 * (lat_km + lon_km))
+
+
+def _resolve_bbox_spec(
+    bbox: str | None,
+    bbox_file: str | None,
+) -> tuple[str, str | None]:
+    """Normalize bbox arguments into one of the supported clipping modes."""
+    if bbox is not None and not isinstance(bbox, str):
+        bbox = str(bbox)
+
+    if bbox_file is None and bbox not in {None, "square", "convex_hull", "polygon"}:
+        try:
+            from pathlib import Path
+
+            if Path(str(bbox)).exists():
+                bbox_file = str(bbox)
+                bbox = "polygon"
+        except Exception:
+            pass
+
+    if bbox_file is not None:
+        bbox = "polygon"
+    if bbox is None:
+        bbox = "square"
+
+    bbox = bbox.lower()
+    if bbox not in {"square", "convex_hull", "polygon"}:
+        raise ValueError("bbox must be 'square', 'convex_hull', or 'polygon'")
+    return bbox, bbox_file
+
+
+def _study_region_geometry(
+    all_coords_latlon: np.ndarray,
+    buffer_km: float,
+    bbox: str | None,
+    bbox_file: str | None,
+    project_to: str | CRS | None,
+) -> tuple[object, CRS]:
+    """Construct the projected clipping geometry for a shared study region."""
+    import geopandas as gpd
+    from shapely.geometry import Point, Polygon, box
+
+    bbox, bbox_file = _resolve_bbox_spec(bbox, bbox_file)
+
+    if project_to is None:
+        region_crs = CRS.from_user_input("EPSG:3857")
+    else:
+        maybe_crs = CRS.from_user_input(project_to)
+        region_crs = CRS.from_user_input("EPSG:3857") if maybe_crs.is_geographic else maybe_crs
+
+    coords_xy = project_coords(
+        all_coords_latlon,
+        coord_order="latlon",
+        coords_crs="EPSG:4326",
+        target_crs=region_crs,
+    )
+
+    if bbox == "square":
+        x_min = float(np.min(coords_xy[:, 0]))
+        x_max = float(np.max(coords_xy[:, 0]))
+        y_min = float(np.min(coords_xy[:, 1]))
+        y_max = float(np.max(coords_xy[:, 1]))
+        region = box(x_min, y_min, x_max, y_max)
+    elif bbox == "convex_hull":
+        gseries = gpd.GeoSeries(
+            [Point(lon, lat) for lat, lon in all_coords_latlon],
+            crs="EPSG:4326",
+        ).to_crs(region_crs)
+        region = gseries.unary_union.convex_hull
+    else:
+        if bbox_file is None:
+            raise ValueError("bbox_file is required when bbox='polygon'")
+        poly_coords = np.loadtxt(bbox_file)
+        if poly_coords.ndim != 2 or poly_coords.shape[1] != 2:
+            raise ValueError("bbox_file must contain two columns (lat lon)")
+        if not np.allclose(poly_coords[0], poly_coords[-1]):
+            raise ValueError("bbox_file polygon must be closed (first and last point identical)")
+        polygon = Polygon([(lon, lat) for lat, lon in poly_coords])
+        region = gpd.GeoSeries([polygon], crs="EPSG:4326").to_crs(region_crs).unary_union
+
+    if buffer_km < 0:
+        raise ValueError("buffer_km must be >= 0")
+    if buffer_km > 0:
+        region = region.buffer(buffer_km * 1000.0)
+    return region, region_crs
+
+
+def _clip_graph_to_region(
+    mesh_coords: np.ndarray,
+    edge_index: np.ndarray,
+    region: object,
+    region_crs: CRS,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Clip graph nodes to a region and retain only surviving inherited edges."""
+    import geopandas as gpd
+    from shapely.geometry import Point
+
+    mesh_series = gpd.GeoSeries(
+        [Point(lon, lat) for lat, lon in mesh_coords],
+        crs="EPSG:4326",
+    ).to_crs(region_crs)
+    mask = np.asarray(mesh_series.within(region) | mesh_series.touches(region), dtype=bool)
+    keep_nodes = np.flatnonzero(mask)
+    if keep_nodes.size == 0:
+        return np.empty((0, 2), dtype=np.float64), np.empty((0, 2), dtype=np.int64)
+
+    old_to_new = np.full(mesh_coords.shape[0], -1, dtype=np.int64)
+    old_to_new[keep_nodes] = np.arange(keep_nodes.size, dtype=np.int64)
+
+    clipped_coords = mesh_coords[keep_nodes]
+    edge_mask = mask[edge_index[:, 0]] & mask[edge_index[:, 1]]
+    clipped_edges = edge_index[edge_mask]
+    if clipped_edges.size == 0:
+        return clipped_coords, np.empty((0, 2), dtype=np.int64)
+
+    clipped_edges = old_to_new[clipped_edges]
+    clipped_edges = np.sort(clipped_edges, axis=1)
+    clipped_edges = np.unique(clipped_edges, axis=0)
+    keep = clipped_edges[:, 0] != clipped_edges[:, 1]
+    return clipped_coords.astype(np.float64, copy=False), clipped_edges[keep].astype(np.int64)
+
+
+def _largest_connected_component(
+    mesh_coords: np.ndarray,
+    edge_index: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Keep the largest connected component of a graph and reindex its nodes."""
+    num_nodes = mesh_coords.shape[0]
+    if num_nodes == 0:
+        return mesh_coords, edge_index
+    if edge_index.size == 0:
+        raise ValueError("Graph clipping produced no edges.")
+
+    adjacency: list[list[int]] = [[] for _ in range(num_nodes)]
+    for u, v in np.asarray(edge_index, dtype=np.int64):
+        adjacency[int(u)].append(int(v))
+        adjacency[int(v)].append(int(u))
+
+    visited = np.zeros(num_nodes, dtype=bool)
+    best_component: list[int] = []
+    for start in range(num_nodes):
+        if visited[start]:
+            continue
+        stack = [start]
+        visited[start] = True
+        component: list[int] = []
+        while stack:
+            node = stack.pop()
+            component.append(node)
+            for nbr in adjacency[node]:
+                if not visited[nbr]:
+                    visited[nbr] = True
+                    stack.append(nbr)
+        if len(component) > len(best_component):
+            best_component = component
+
+    keep_nodes = np.asarray(sorted(best_component), dtype=np.int64)
+    if keep_nodes.size < 2:
+        raise ValueError("Largest connected component has fewer than two nodes.")
+
+    keep_mask = np.zeros(num_nodes, dtype=bool)
+    keep_mask[keep_nodes] = True
+    old_to_new = np.full(num_nodes, -1, dtype=np.int64)
+    old_to_new[keep_nodes] = np.arange(keep_nodes.size, dtype=np.int64)
+
+    component_coords = mesh_coords[keep_nodes]
+    edge_mask = keep_mask[edge_index[:, 0]] & keep_mask[edge_index[:, 1]]
+    component_edges = old_to_new[edge_index[edge_mask]]
+    if component_edges.size == 0:
+        raise ValueError("Largest connected component has no edges.")
+
+    component_edges = np.sort(component_edges, axis=1)
+    component_edges = np.unique(component_edges, axis=0)
+    return component_coords.astype(np.float64, copy=False), component_edges.astype(np.int64, copy=False)
+
+
 def grid_nodes_from_bbox(
     sample_coords: np.ndarray,
     spacing_km: float | None = None,
@@ -543,6 +837,91 @@ def _filter_long_mesh_edges(
     nominal_step = float(np.min(positive))
     keep = edge_lengths <= (nominal_step * max_ratio)
     return edge_index[keep]
+
+
+def build_geodesic_mesh_graph(
+    coords_list: list[np.ndarray],
+    spacing_km: float | None = 50.0,
+    spacing_deg: float | None = None,
+    grid_type: str = "triangular",
+    project_to: str | CRS | None = None,
+    coord_order: str = "latlon",
+    coords_crs: str | CRS | None = "EPSG:4326",
+    buffer_km: float = 0.0,
+    bbox: str | None = "square",
+    bbox_file: str | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Create a shared geodesic triangular mesh clipped to the study region.
+
+    Parameters
+    ----------
+    coords_list : list[np.ndarray]
+        Per-species coordinate arrays (`S_i x 2`).
+    spacing_km : float | None, optional
+        Target edge spacing in kilometers.
+    spacing_deg : float | None, optional
+        Approximate spacing in degrees. Used only when `spacing_km` is omitted.
+    grid_type : str, optional
+        Accepted for compatibility; only `"triangular"` is supported.
+    project_to : str | CRS | None, optional
+        Optional projected CRS used for region clipping.
+    coord_order : str, optional
+        Coordinate order of arrays in `coords_list`.
+    coords_crs : str | CRS | None, optional
+        CRS of coordinates in `coords_list`.
+    buffer_km : float, optional
+        Buffer applied to the clipping geometry.
+    bbox : str | None, optional
+        Bounding shape: `"square"`, `"convex_hull"`, `"polygon"`, or `None`.
+    bbox_file : str | None, optional
+        Path to polygon coordinates (`lat lon`) when using polygon clipping.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        `mesh_coords` (`M x 2`) and `edge_index` (`E x 2`) in native mesh topology.
+    """
+    if not coords_list:
+        raise ValueError("coords_list is empty")
+    if spacing_km is not None and spacing_deg is not None:
+        raise ValueError("Provide only one of spacing_km or spacing_deg.")
+
+    grid_type = grid_type.lower()
+    if grid_type != "triangular":
+        raise ValueError("build_geodesic_mesh_graph only supports grid_type='triangular'.")
+
+    all_coords = np.vstack(coords_list)
+    all_coords_latlon = _coords_to_latlon(
+        all_coords,
+        coord_order=coord_order,
+        coords_crs=coords_crs,
+    )
+    mean_lat = float(np.mean(all_coords_latlon[:, 0]))
+
+    if spacing_km is None:
+        if spacing_deg is None:
+            raise ValueError("Provide spacing_km or spacing_deg.")
+        spacing_km = _spacing_km_from_deg(spacing_deg, mean_lat=mean_lat)
+    elif spacing_km <= 0.0:
+        raise ValueError("spacing_km must be > 0.")
+
+    subdivisions, _ = _choose_icosphere_subdivision_for_spacing(float(spacing_km))
+    mesh_coords, edge_index = _geodesic_mesh_for_subdivision(subdivisions)
+    region, region_crs = _study_region_geometry(
+        all_coords_latlon,
+        buffer_km=buffer_km,
+        bbox=bbox,
+        bbox_file=bbox_file,
+        project_to=project_to,
+    )
+    mesh_coords, edge_index = _clip_graph_to_region(mesh_coords, edge_index, region, region_crs)
+    if mesh_coords.size == 0:
+        raise ValueError(
+            "Geodesic mesh generation produced zero nodes. Check bbox/buffer/grid spacing."
+        )
+
+    mesh_coords, edge_index = _largest_connected_component(mesh_coords, edge_index)
+    return mesh_coords, edge_index
 
 
 def build_dense_mesh_graph(

@@ -15,5 +15,6 @@ dependencies:
   - folium
   - pykrige
   - networkx
+  - trimesh
   - mkdocs
   - mkdocs-material

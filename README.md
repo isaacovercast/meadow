@@ -129,3 +129,7 @@ Then build graphs (and optionally sample rasters) in `build_species_graphs(...)`
 - `src/multispecies_resistance/train.py`: graph dataset construction + training loop
 - `src/multispecies_resistance/model.py`: neural resistance model
 - `src/multispecies_resistance/io.py`: PEDIC sample-level loader
+
+## Alternative mesh builder
+
+`multispecies_resistance.graph.build_geodesic_mesh_graph(...)` builds a clipped geodesic triangular mesh from a `trimesh` icosphere while preserving native mesh adjacency. It is implemented as an additive alternative to `build_dense_mesh_graph(...)` and returns the same `(mesh_coords, edge_index)` structure.

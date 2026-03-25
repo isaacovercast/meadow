@@ -7,6 +7,7 @@ from .graph import (
     SpeciesGraph,
     build_delaunay_graph,
     build_dense_mesh_graph,
+    build_geodesic_mesh_graph,
     edge_features,
     project_coords,
     standardize_features,

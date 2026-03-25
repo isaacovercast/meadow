@@ -11,6 +11,7 @@ from multispecies_resistance.graph import (
     SpeciesGraph,
     build_edge_neighbor_pairs,
     build_dense_mesh_graph,
+    build_geodesic_mesh_graph,
     edge_features,
     project_coords,
     standardize_features,
@@ -138,6 +139,7 @@ def build_species_graphs(
     raster_fill_method: str = "nan",
     raster_coord_order: str = "latlon",
     raster_coords_crs: str = "EPSG:4326",
+    use_geodesic: bool = False,
 ) -> tuple[List[SpeciesGraph], dict | None]:
     """Convert sample-level species inputs into graph-based training datasets.
 
@@ -266,8 +268,9 @@ def build_species_graphs(
                     coords_crs=coords_crs,
                 )
 
+            graph_fn = build_geodesic_mesh_graph if use_geodesic else build_dense_mesh_graph
             coords_list = [sp.sample_coords for sp in species_list]
-            mesh_coords, edge_index = build_dense_mesh_graph(
+            mesh_coords, edge_index = graph_fn(
                 coords_list,
                 spacing_km=mesh_spacing_km,
                 spacing_deg=mesh_spacing_deg,

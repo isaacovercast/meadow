@@ -105,6 +105,26 @@ Returns:
 - `mesh_coords`: `M x 2` mesh node coordinates.
 - `edge_index`: `E x 2` mesh edge list built from Delaunay edges after filtering long perimeter chords.
 
+## `build_geodesic_mesh_graph(...)`
+Constructs a shared geodesic triangular mesh from an icosphere and clips it to the study region while preserving native mesh adjacency.
+
+Parameters:
+
+- `coords_list`: list of per-species coordinate arrays.
+- `spacing_km` / `spacing_deg`: target mesh spacing; `spacing_deg` is converted to an approximate kilometer spacing for compatibility.
+- `grid_type`: accepted for compatibility; only `"triangular"` is supported.
+- `project_to`: optional projected CRS used for clipping geometry.
+- `coord_order`: coordinate order in `coords_list`.
+- `coords_crs`: CRS of coordinates.
+- `buffer_km`: extra geographic buffer before clipping.
+- `bbox`: clipping mode (`"square"`, `"convex_hull"`, `"polygon"`, or `None`).
+- `bbox_file`: polygon file path for `bbox="polygon"`.
+
+Returns:
+
+- `mesh_coords`: `M x 2` geodesic mesh node coordinates in `lat, lon`.
+- `edge_index`: `E x 2` native geodesic edge list derived from triangle faces.
+
 ## `edge_features(site_coords, site_env, edge_index)`
 Builds edge-level feature vectors from spatial distance and environmental differences.
 

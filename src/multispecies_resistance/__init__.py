@@ -1,6 +1,7 @@
 """Minimal multi-species resistance model prototype."""
 
 from .climate import download_climate_layers, sample_climate_for_sites
+from .cv import choose_edge_smoothing_cv
 from .data import SpeciesData, aggregate_site_genotypes, pairwise_site_distance
 from .graph import (
     SpeciesGraph,

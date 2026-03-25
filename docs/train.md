@@ -8,6 +8,7 @@
 - `node_coords`: graph node coordinates.
 - `sample_coords`: original observed sample coordinates.
 - `edge_index` and `edge_features`: edge topology and edge covariates.
+- `edge_nbr_i` and `edge_nbr_j`: neighboring-edge pairs used for optional smoothing penalties.
 - `pair_i`, `pair_j`, `pair_dist`: pairwise training targets.
 - optional validation pairs (`val_pair_i`, `val_pair_j`, `val_pair_dist`).
 
@@ -49,3 +50,9 @@ Splits pair targets into training/validation sets using site holdout or random p
 
 ## `train_model(...)`
 Trains `MultiSpeciesResistanceModel` with optional validation splits and early stopping.
+
+Key parameters:
+
+- `l2_shared`, `l2_species`: quadratic penalties on shared and species-specific edge logits.
+- `edge_smoothing`: value in `[0, 1]` that increasingly penalizes differences between logits on edges that share a node.
+- `val_fraction`, `val_strategy`, `patience`, `min_delta`, `restore_best`: validation-split and early-stopping controls.

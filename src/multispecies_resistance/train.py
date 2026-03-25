@@ -9,6 +9,7 @@ import torch
 from multispecies_resistance.data import SpeciesData, aggregate_site_genotypes, pairwise_site_distance
 from multispecies_resistance.graph import (
     SpeciesGraph,
+    build_edge_neighbor_pairs,
     build_dense_mesh_graph,
     edge_features,
     project_coords,
@@ -215,6 +216,7 @@ def build_species_graphs(
                 node_env = np.zeros((node_coords.shape[0], 0), dtype=np.float64)
 
             shared_edge_features = edge_features(node_coords, node_env, edge_index)
+            edge_nbr_i, edge_nbr_j = build_edge_neighbor_pairs(edge_index, node_coords.shape[0])
             tree = cKDTree(node_coords)
 
             for sp in species_list:
@@ -247,6 +249,8 @@ def build_species_graphs(
                     pair_j=pair_j,
                     pair_dist=pair_dist,
                     num_nodes=node_coords.shape[0],
+                    edge_nbr_i=edge_nbr_i,
+                    edge_nbr_j=edge_nbr_j,
                 )
                 graphs.append(graph)
                 all_feats.append(shared_edge_features)
@@ -289,6 +293,7 @@ def build_species_graphs(
                 node_env = np.zeros((mesh_coords.shape[0], 0), dtype=np.float64)
 
             shared_edge_features = edge_features(mesh_coords, node_env, edge_index)
+            edge_nbr_i, edge_nbr_j = build_edge_neighbor_pairs(edge_index, mesh_coords.shape[0])
             tree = cKDTree(mesh_coords)
 
             for sp in species_list:
@@ -321,6 +326,8 @@ def build_species_graphs(
                     pair_j=pair_j,
                     pair_dist=pair_dist,
                     num_nodes=mesh_coords.shape[0],
+                    edge_nbr_i=edge_nbr_i,
+                    edge_nbr_j=edge_nbr_j,
                 )
                 graphs.append(graph)
                 all_feats.append(shared_edge_features)
@@ -442,6 +449,7 @@ def train_model(
     epochs: int = 200,
     l2_shared: float = 1e-4,
     l2_species: float = 1e-4,
+    edge_smoothing: float = 0.0,
     log_every: int = 25,
     val_fraction: float = 0.2,
     val_strategy: str = "site",
@@ -467,6 +475,9 @@ def train_model(
         L2 penalty weight for shared logits.
     l2_species : float, optional
         L2 penalty weight for species logits.
+    edge_smoothing : float, optional
+        Edge-neighbor smoothing control in `[0, 1]`. Larger values more strongly
+        penalize differences between logits on edges that share a node.
     log_every : int, optional
         Epoch interval for console logging.
     val_fraction : float, optional
@@ -489,8 +500,12 @@ def train_model(
     MultiSpeciesResistanceModel
         Trained model instance.
     """
+    if not (0.0 <= edge_smoothing <= 1.0):
+        raise ValueError("edge_smoothing must be in [0, 1].")
+
     num_species = len(species_graphs)
     edge_feat_dim = species_graphs[0].edge_features.shape[1]
+    smooth_weight = (edge_smoothing / max(1e-6, 1.0 - edge_smoothing)) ** 2
 
     model = MultiSpeciesResistanceModel(num_species, edge_feat_dim, hidden_dim=hidden_dim)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -542,7 +557,21 @@ def train_model(
             reg = l2_shared * torch.mean(shared_logits ** 2) + l2_species * torch.mean(
                 species_logits ** 2
             )
-            loss = mse + reg
+            smooth_penalty = shared_logits.new_tensor(0.0)
+            if (
+                smooth_weight > 0.0
+                and g.edge_nbr_i is not None
+                and g.edge_nbr_j is not None
+                and g.edge_nbr_i.size > 0
+            ):
+                edge_nbr_i = torch.from_numpy(g.edge_nbr_i)
+                edge_nbr_j = torch.from_numpy(g.edge_nbr_j)
+                combined_logits = shared_logits + species_logits
+                smooth_penalty = torch.mean(
+                    (combined_logits[edge_nbr_i] - combined_logits[edge_nbr_j]) ** 2
+                )
+
+            loss = mse + reg + smooth_weight * smooth_penalty
             total_loss = total_loss + loss
 
             if g.val_pair_i is not None and g.val_pair_dist is not None:

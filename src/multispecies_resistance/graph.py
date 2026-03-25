@@ -33,6 +33,10 @@ class SpeciesGraph:
         Pairwise target distances aligned with `(pair_i, pair_j)`.
     num_nodes : int
         Number of graph nodes.
+    edge_nbr_i : np.ndarray | None, optional
+        Edge indices for the first member of each neighboring-edge pair.
+    edge_nbr_j : np.ndarray | None, optional
+        Edge indices for the second member of each neighboring-edge pair.
     val_pair_i : np.ndarray | None, optional
         Optional validation pair row indices.
     val_pair_j : np.ndarray | None, optional
@@ -50,6 +54,8 @@ class SpeciesGraph:
     pair_j: np.ndarray
     pair_dist: np.ndarray
     num_nodes: int
+    edge_nbr_i: np.ndarray | None = None
+    edge_nbr_j: np.ndarray | None = None
     val_pair_i: np.ndarray | None = None
     val_pair_j: np.ndarray | None = None
     val_pair_dist: np.ndarray | None = None
@@ -472,6 +478,44 @@ def build_delaunay_graph(
 
     edge_index = np.array(sorted(edges), dtype=np.int64)
     return edge_index
+
+
+def build_edge_neighbor_pairs(
+    edge_index: np.ndarray,
+    num_nodes: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Enumerate pairs of edges that meet at a shared graph node.
+
+    Parameters
+    ----------
+    edge_index : np.ndarray
+        `E x 2` edge list over graph nodes.
+    num_nodes : int
+        Number of graph nodes referenced by `edge_index`.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        Parallel integer arrays of neighboring-edge indices.
+    """
+    incident_edges: list[list[int]] = [[] for _ in range(num_nodes)]
+    for edge_id, (u, v) in enumerate(np.asarray(edge_index, dtype=np.int64)):
+        incident_edges[int(u)].append(edge_id)
+        incident_edges[int(v)].append(edge_id)
+
+    pairs: set[tuple[int, int]] = set()
+    for edges_at_node in incident_edges:
+        for i, edge_i in enumerate(edges_at_node):
+            for edge_j in edges_at_node[i + 1 :]:
+                a, b = (edge_i, edge_j) if edge_i < edge_j else (edge_j, edge_i)
+                pairs.add((a, b))
+
+    if not pairs:
+        empty = np.empty(0, dtype=np.int64)
+        return empty, empty
+
+    pair_array = np.asarray(sorted(pairs), dtype=np.int64)
+    return pair_array[:, 0], pair_array[:, 1]
 
 
 def _filter_long_mesh_edges(

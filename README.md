@@ -48,8 +48,17 @@ ax, gdf_edges = graphs[0].plot(edge_feature_idx=0, basemap=True)
 `build_species_graphs(...)` returns `SpeciesGraph` objects that include:
 - graph geometry (`node_coords`, `edge_index`)
 - edge covariates (`edge_features`)
+- neighboring-edge pairs for optional smoothing penalties (`edge_nbr_i`, `edge_nbr_j`)
 - original sample locations (`sample_coords`)
 - pairwise training targets (`pair_i`, `pair_j`, `pair_dist`)
+
+Training can optionally smooth neighboring predicted edge logits:
+
+```python
+from multispecies_resistance.train import train_model
+
+model = train_model(graphs, edge_smoothing=0.5)
+```
 
 ## GeoTIFF environmental sampling (inside graph build)
 

@@ -14,6 +14,7 @@ Fields:
 - `sample_coords`: original observed sample coordinates.
 - `pair_i`, `pair_j`, `pair_dist`: pairwise training targets.
 - `num_nodes`: node count.
+- `edge_nbr_i`, `edge_nbr_j`: precomputed neighboring-edge pairs for edge smoothing penalties.
 - `val_pair_i`, `val_pair_j`, `val_pair_dist`: optional validation targets.
 
 ## `SpeciesGraph.plot(edge_feature_idx=None, ...)`
@@ -71,6 +72,18 @@ Parameters:
 Returns:
 
 - `edge_index`: `E x 2` undirected edges with sorted node indices.
+
+## `build_edge_neighbor_pairs(edge_index, num_nodes)`
+Builds the neighboring-edge index pairs used when smoothing predicted edge logits during training.
+
+Parameters:
+
+- `edge_index`: `E x 2` edge list over graph nodes.
+- `num_nodes`: total number of graph nodes referenced by `edge_index`.
+
+Returns:
+
+- `(edge_nbr_i, edge_nbr_j)`: parallel arrays of edge indices where each pair shares a node.
 
 ## `build_dense_mesh_graph(...)`
 Constructs a shared mesh covering all species and returns mesh nodes plus graph edges.

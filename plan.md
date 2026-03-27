@@ -1,400 +1,361 @@
-# Plan: Implement `build_geodesic_mesh_graph(...)` with `trimesh`
+# Plan: Add Data-Support-Based Edge Down-Weighting That Is Easy To Toggle Off
 
 ## 1. Goal
-Implement a new `build_geodesic_mesh_graph(...)` function in `src/multispecies_resistance/graph.py` using `trimesh` so it can act as a drop-in replacement for `build_dense_mesh_graph(...)`.
+Add an optional mechanism that down-weights edges far from nodes that have observed data, using graph distance to the nearest supported node.
 
-This plan is explicitly focused on compatibility with the current codebase. The new function should preserve the downstream expectations already relied on by:
-- `build_species_graphs(...)`
-- edge feature construction
-- sample-to-node assignment
-- plotting and graph export
-- CV fold construction on shared graphs
+The design goal is not just correctness. It must also be easy to disable completely without affecting the rest of the code path. The implementation should therefore be isolated, parameterized cleanly, and avoid entangling the core model logic with special-case conditionals.
 
-No implementation is performed in this plan. This file specifies the exact changes to make.
+No implementation is performed in this plan. This file specifies the changes only.
 
-## 2. Compatibility Target
-The new function should match the current dense-mesh builder in the ways that matter to the rest of the package.
+## 2. Desired Behavior
+For each species graph:
+- nodes with observed samples should have full support weight
+- nodes far from any observed sample should have low support weight
+- edges should inherit an attenuation factor based on the support of their endpoint nodes
+- this attenuation should reduce the influence of unsupported regions on effective resistance inference
 
-### 2.1 Function contract
-`build_geodesic_mesh_graph(...)` should return exactly:
-- `mesh_coords`: `N x 2` array in `lat, lon`
-- `edge_index`: `E x 2` undirected integer edge list with node indices into `mesh_coords`
+The attenuation should be optional.
 
-### 2.2 Input compatibility
-The function signature should be compatible with current `build_dense_mesh_graph(...)` usage, meaning it should accept:
-- `coords_list`
-- `spacing_km`
-- `spacing_deg`
-- `grid_type`
-- `project_to`
-- `coord_order`
-- `coords_crs`
-- `buffer_km`
-- `bbox`
-- `bbox_file`
+When the feature is off:
+- behavior should be identical to the current implementation
+- no soft warnings
+- no partial application
+- no need for callers to change existing code
 
-Not all of these need to affect the geodesic mesh in the same way they do now, but the function should accept them so it can be swapped into existing call sites with minimal disruption.
+## 3. Recommended Modeling Choice
+Use graph-distance-based support weights and apply them directly to edge conductance during resistance-matrix construction.
 
-### 2.3 Behavioral compatibility
-The new function should preserve these expectations:
-- all returned node coordinates are in `lat, lon`
-- all graph edges are spatially local and undirected
-- all node/edge arrays are NumPy arrays with stable dtypes
-- clipping to `square`, `convex_hull`, or `polygon` remains supported
-- graph construction works from the union of all species sample coordinates
-- downstream code does not need to know whether the mesh came from a local lattice or a geodesic mesh
+### 3.1 Why graph distance
+Graph distance is the right quantity because:
+- the model operates on the graph, not continuous space
+- clipped meshes and irregular boundaries make Euclidean distance misleading
+- shortest-path distance along the graph reflects actual connectivity support
 
-## 3. Design Summary
-The current dense-mesh builder:
-1. creates local lattice nodes over a bounding box,
-2. clips nodes,
-3. reconstructs adjacency with Delaunay,
-4. filters long edges.
+### 3.2 Why direct conductance attenuation
+There are three possible designs:
+1. add support weight as an extra edge feature
+2. directly attenuate conductance/resistance using support weight
+3. use support weight only in a regularization term
 
-The new geodesic builder should instead:
-1. construct a global or sufficiently dense geodesic triangular mesh from `trimesh.creation.icosphere(...)`,
-2. derive native adjacency directly from triangle faces,
-3. clip nodes to the study region,
-4. retain only native edges whose endpoints survive clipping,
-5. optionally keep the largest connected component.
-
-This avoids Delaunay entirely and preserves native geodesic mesh topology.
-
-## 4. Detailed Implementation Plan
-
-## 4.1 Add `trimesh` dependency
-Files to update:
-- `environment.yml`
-- any packaging/dependency metadata if present
-
-Planned change:
-- add `trimesh` as a direct dependency
+Recommendation:
+- use direct conductance attenuation
 
 Reason:
-- the new mesh builder will rely on `trimesh.creation.icosphere(...)` as the source of vertices and triangle faces
+- this guarantees unsupported edges are down-weighted
+- it matches the stated goal directly
+- it is simpler to reason about than adding support as a learned feature
+- it is easy to toggle with a single parameter
 
-Validation:
-- importing `trimesh` should succeed in the project environment
+## 4. Isolation Strategy
+This feature should be isolated in three places only:
+1. graph preprocessing: compute support weights
+2. graph container: store support weights
+3. model resistance construction: optionally apply those weights
 
-## 4.2 Add new helper functions to `src/multispecies_resistance/graph.py`
-The new mesh builder should be composed from small helpers so its behavior is easy to test and reason about.
+Everything else should remain unchanged.
 
-### A) `_cartesian_to_latlon(vertices)`
-Purpose:
-- convert unit-sphere Cartesian coordinates from the icosphere to `lat, lon`
+In particular:
+- `edge_features` should not be changed
+- existing CV code should not need special handling
+- plotting should not need special handling
+- the default training behavior should stay unchanged when support attenuation is disabled
 
-Inputs:
-- `vertices`: `N x 3`
+## 5. Public Toggle Design
+Add one explicit control parameter to training and graph-building code paths.
 
-Outputs:
-- `coords_latlon`: `N x 2`
+Recommended parameter name:
+- `support_decay_km: float | None = None`
 
-Implementation notes:
-- `lat = degrees(arcsin(z / r))`
-- `lon = degrees(arctan2(y, x))`
-- for unit sphere, `r = 1`, but computing `r` explicitly is safer
+Interpretation:
+- `None`: feature is disabled, preserve current behavior exactly
+- positive float: enable support attenuation using this decay scale
 
-### B) `_edge_index_from_faces(faces)`
-Purpose:
-- build unique undirected edges from triangular faces
+Optional second parameter:
+- `support_floor: float = 0.01`
 
-Inputs:
-- `faces`: `F x 3`
+Interpretation:
+- minimum multiplicative support retained on very distant edges
+- avoids exact zero conductance scaling and associated numerical instability
 
-Outputs:
-- `edge_index`: `E x 2`
+This keeps toggling simple:
+- on: set `support_decay_km`
+- off: leave it as `None`
 
-Implementation notes:
-- each face contributes `(a, b)`, `(b, c)`, `(a, c)`
-- sort endpoint indices within each edge
-- deduplicate globally
-- return sorted integer array
+## 6. Data Structures To Add
 
-### C) `_choose_icosphere_subdivision_for_spacing(spacing_km)`
-Purpose:
-- map requested `spacing_km` to an icosphere subdivision level
+## 6.1 `SpeciesGraph` additions
+File:
+- `src/multispecies_resistance/graph.py`
 
-Inputs:
-- `spacing_km`
+Add optional fields:
+- `edge_support_weight: np.ndarray | None = None`
 
-Outputs:
-- integer subdivision level
-- optionally also actual median edge length at that level
+Do not add extra fields unless they are needed for debugging.
 
-Implementation notes:
-- try a fixed set of subdivision levels, e.g. `0..7`
-- for each level:
-  - build temporary icosphere
-  - compute edge list from faces
-  - convert vertices to `lat, lon`
-  - compute median great-circle edge length using `haversine_km(...)`
-- pick the level whose median edge length is closest to `spacing_km`
-- bias toward the coarsest acceptable level if two are equally close, to control graph size
+Rationale:
+- the downstream model only needs edge-level attenuation
+- storing intermediate node distances and node weights is unnecessary for the first implementation
+- keeping only `edge_support_weight` makes the feature smaller and easier to disable/remove later
 
-Important compatibility note:
-- if `spacing_km` is currently the user's main resolution control, the new builder should continue to honor it rather than forcing callers to think in terms of subdivision level
+If debugging support is needed later, it can be added in a separate pass.
 
-### D) `_study_region_geometry(...)`
-Purpose:
-- build the clipping geometry used to subset the geodesic mesh, with behavior matching current `bbox` handling
+## 7. Graph-Side Implementation Plan
 
-Inputs:
-- `all_coords_latlon`
-- `buffer_km`
-- `bbox`
-- `bbox_file`
-- `coords_crs`
+## 7.1 Add graph-distance helper
+File:
+- `src/multispecies_resistance/graph.py`
 
-Outputs:
-- region geometry in projected coordinates
-- possibly also projected CRS used for clipping
+Add helper:
+- `compute_edge_support_weight(...)`
 
-Implementation notes:
-- retain the current behaviors:
-  - `bbox="square"`: rectangular sample bounding box plus buffer
-  - `bbox="convex_hull"`: convex hull of sample locations plus buffer
-  - `bbox="polygon"`: polygon read from `bbox_file`
-- use projected planar geometry for clipping, as the current implementation already does
-- preserve the current error behavior for malformed polygon files
-
-### E) `_clip_graph_to_region(mesh_coords, edge_index, region, coords_crs)`
-Purpose:
-- subset nodes and edges to the requested study region without changing mesh topology
-
-Inputs:
-- `mesh_coords`: `N x 2` in `lat, lon`
-- `edge_index`: `E x 2`
-- `region`: clipping geometry
-- `coords_crs`
-
-Outputs:
-- clipped `mesh_coords`
-- clipped and reindexed `edge_index`
-
-Implementation notes:
-- project nodes to the region CRS
-- keep nodes within or touching the region
-- build old-to-new node index map
-- keep only edges whose two endpoints survive
-- remap surviving edge indices into compact node numbering
-
-Important design point:
-- do not add any new edges during clipping
-- do not call Delaunay after clipping
-
-### F) `_largest_connected_component(mesh_coords, edge_index)`
-Purpose:
-- remove small disconnected graph fragments caused by clipping
-
-Inputs:
-- `mesh_coords`
-- `edge_index`
-
-Outputs:
-- component-filtered `mesh_coords`
-- component-filtered `edge_index`
-
-Implementation notes:
-- compute connected components on the node-edge graph
-- keep the largest component only
-- reindex nodes after component filtering
-
-This should likely be enabled by default because polygon or hull clipping may leave tiny isolated slivers that are not useful downstream.
-
-## 4.3 Implement `build_geodesic_mesh_graph(...)` in `src/multispecies_resistance/graph.py`
-Planned public signature:
+Suggested signature:
 
 ```python
-def build_geodesic_mesh_graph(
-    coords_list: list[np.ndarray],
-    spacing_km: float | None = 50.0,
-    spacing_deg: float | None = None,
-    grid_type: str = "triangular",
-    project_to: str | CRS | None = None,
-    coord_order: str = "latlon",
-    coords_crs: str | CRS | None = "EPSG:4326",
-    buffer_km: float = 0.0,
-    bbox: str | None = "square",
-    bbox_file: str | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
+def compute_edge_support_weight(
+    node_coords: np.ndarray,
+    edge_index: np.ndarray,
+    occupied_nodes: np.ndarray,
+    support_decay_km: float,
+    support_floor: float = 0.01,
+) -> np.ndarray:
     ...
 ```
 
-### A) Preserve unused compatibility parameters where necessary
-- `grid_type` should be accepted even if only triangular geodesic meshes are supported
-- for simplicity and correctness, reject unsupported values explicitly:
-  - allow `grid_type="triangular"`
-  - raise for `grid_type="rect"`
+Inputs:
+- `node_coords`: `N x 2` in `lat, lon`
+- `edge_index`: `E x 2`
+- `occupied_nodes`: integer node ids with observed data for the species
+- `support_decay_km`: positive decay scale
+- `support_floor`: lower bound on support weight
 
-Reason:
-- this keeps the signature compatible while making the geodesic semantics explicit
+Output:
+- `edge_support_weight`: length `E`, values in `(0, 1]`
 
-### B) Preserve `spacing_deg` in the signature
-- geodesic meshes should fundamentally be driven by `spacing_km`, not `spacing_deg`
-- for drop-in compatibility, accept `spacing_deg` but handle it explicitly
+### Behavior:
+1. compute edge lengths in km using `haversine_km(...)`
+2. build adjacency with those edge lengths as graph weights
+3. run multi-source Dijkstra from all occupied nodes
+4. obtain `dist_to_supported[node]`
+5. convert node distances into node support weights
+6. convert node support weights into edge support weights
 
-Planned behavior:
-- if `spacing_km` is provided, use it
-- if only `spacing_deg` is provided, convert it to an approximate kilometer spacing using the sample mean latitude, mirroring the current approximation style
-- if both are provided, raise just as current code does
-- if neither is provided, use the default `spacing_km`
-
-### C) Use all species coordinates to define the region
-- stack all `coords_list` inputs
-- normalize into `lat, lon` based on `coord_order`
-- use these coordinates only for:
-  - choosing the clipping region
-  - choosing effective mesh resolution
-
-### D) Build the raw geodesic mesh
-- determine subdivision level from requested spacing
-- call `trimesh.creation.icosphere(...)`
-- convert vertices to `lat, lon`
-- derive native undirected edges from faces
-
-### E) Clip the raw mesh to the study region
-- build region geometry from current `bbox` logic
-- clip nodes and inherited edges
-- if resulting graph is empty, raise a clear error analogous to the current dense-mesh builder
-
-### F) Keep the largest connected component
-- after clipping, reduce to the largest connected component
-- raise if no valid component remains
-
-### G) Return only `mesh_coords` and `edge_index`
-- do not return faces or extra metadata
-- keep the function contract identical to `build_dense_mesh_graph(...)`
-
-## 4.4 Keep `build_dense_mesh_graph(...)` intact initially
-To minimize disruption, the first implementation should not immediately replace current behavior everywhere.
-
-Planned approach:
-- add `build_geodesic_mesh_graph(...)` as a new function first
-- leave `build_dense_mesh_graph(...)` unchanged during the first implementation pass
-- once validated, optionally make `build_dense_mesh_graph(...)` delegate to the geodesic builder or add a mesh-mode selector in a later pass
-
-Reason:
-- this allows direct testing of the new builder without destabilizing the current pipeline immediately
-- it is the safest path toward a later drop-in swap
-
-## 4.5 Optional second-stage compatibility swap
-After validating the new function, there are two possible compatibility paths.
-
-### Option A) Internal replacement
-- modify `build_dense_mesh_graph(...)` so it simply calls `build_geodesic_mesh_graph(...)`
-- preserve the same public signature
-- downstream code remains unchanged
-
-### Option B) Explicit selector during transition
-- temporarily add a mesh construction selector internal to `graph.py` or `train.py`
-- use geodesic builder only when explicitly chosen
+## 7.2 Multi-source shortest path
+Implementation approach:
+- use `scipy.sparse.csgraph.dijkstra(...)` if convenient
+- alternatively implement a small heap-based multi-source Dijkstra in pure Python/NumPy
 
 Recommendation:
-- implement Option A only after the new function is validated against current examples and plotting behavior
-- for the first implementation, keep the new builder separate
+- prefer `scipy.sparse.csgraph.dijkstra` because SciPy is already a dependency and the implementation will be shorter and clearer
 
-## 5. Specific Compatibility Constraints
-These constraints should guide implementation choices.
+Planned steps:
+1. create sparse weighted adjacency matrix from `edge_index` and edge lengths
+2. pass `indices=occupied_nodes`
+3. request minimum distance to any source
+4. collapse to a single distance vector if the API returns per-source distances
 
-### 5.1 Coordinate conventions
-- all returned coordinates must remain `lat, lon`
-- do not return projected coordinates from the geodesic builder
-- all clipping/projection work should stay internal
+## 7.3 Distance-to-weight transform
+Recommended node-weight function:
 
-### 5.2 Edge-index conventions
-- `edge_index` must remain undirected
-- each edge must appear exactly once
-- endpoints must be sorted within each row or otherwise follow the current normalized convention
-- dtype should remain integer, ideally `np.int64`
+```python
+node_weight = support_floor + (1.0 - support_floor) * exp(-dist_to_supported / support_decay_km)
+```
 
-### 5.3 Error behavior
-The new function should keep current error style where possible:
-- empty `coords_list` -> clear `ValueError`
-- both `spacing_km` and `spacing_deg` provided -> clear `ValueError`
-- invalid `bbox` value -> clear `ValueError`
-- invalid polygon file -> clear `ValueError`
-- clipping that produces zero nodes -> clear `ValueError`
+Properties:
+- occupied nodes: distance `0`, weight `1`
+- far nodes: asymptote to `support_floor`
+- no exact zero values
 
-### 5.4 Downstream graph assumptions
-The new graph must remain compatible with:
-- `edge_features(...)`
-- `build_edge_neighbor_pairs(...)`
-- `SpeciesGraph.plot(...)`
-- `build_species_graphs(...)`
-- `build_graph_cv_folds(...)`
+This should be implemented in one small helper or directly inside `compute_edge_support_weight(...)`.
 
-That means:
-- no multigraph edges
-- no duplicate nodes
-- no empty graphs
-- no disconnected slivers if avoidable
+## 7.4 Node-to-edge aggregation rule
+Recommended edge-weight rule:
 
-## 6. Validation Plan
+```python
+edge_support_weight = minimum(node_weight[u], node_weight[v])
+```
 
-## 6.1 Unit-level validation
-For the new builder alone:
-1. returns non-empty `mesh_coords` and `edge_index` on a simple coordinate set
-2. `mesh_coords.shape[1] == 2`
-3. `edge_index.shape[1] == 2`
-4. all `edge_index` values are in `[0, len(mesh_coords))`
-5. no duplicate undirected edges
-6. no self-edges
-7. output graph is connected after largest-component filtering
+Reason:
+- strict and easy to interpret
+- if either endpoint is in weakly supported territory, the edge is weakly supported
 
-## 6.2 Geometric validation
-1. median edge length should be close to requested `spacing_km`
-2. edge-length distribution should be substantially tighter than the current local-lattice-plus-Delaunay builder
-3. clipping with `convex_hull` should not create long perimeter chords, because no Delaunay reconstruction occurs after clipping
-4. plotting should show isotropic triangular mesh geometry without row-based horizontal banding from grid construction itself
+Alternative rules like mean or geometric mean should not be implemented initially.
 
-## 6.3 Compatibility validation
-1. swap geodesic mesh output into `build_species_graphs(...)` without changing downstream code
-2. confirm sample-to-node assignment still works
-3. confirm raster sampling at node coordinates still works
-4. confirm `SpeciesGraph.plot(...)` still renders edges and samples normally
-5. confirm `build_edge_neighbor_pairs(...)` still produces valid neighboring-edge pairs
-6. confirm CV fold construction in `cv.py` still runs on the geodesic graph
+## 8. Training-Data Construction Changes
+File:
+- `src/multispecies_resistance/train.py`
 
-## 6.4 Example-level validation
-Test on at least:
-1. one synthetic small example
-2. one real notebook workflow already present in the repository
-3. one case using `bbox="convex_hull"`
-4. one case using a polygon file
+## 8.1 Add optional parameter to `build_species_graphs(...)`
+Add:
+- `support_decay_km: float | None = None`
+- `support_floor: float = 0.01`
 
-## 7. Documentation Plan
-Files to update once implementation begins:
+Behavior:
+- if `support_decay_km is None`, do not compute support weights
+- if provided, compute per-species `edge_support_weight` after sample-to-node assignment and occupied-node identification
+
+## 8.2 Where to compute support weight
+For both graph-construction branches in `build_species_graphs(...)`:
+1. assign samples to nodes
+2. compute `site_counts`
+3. determine occupied nodes via `valid = np.where(site_counts > 0)[0]`
+4. if support attenuation is enabled:
+   - call `compute_edge_support_weight(...)`
+   - store result in `SpeciesGraph(edge_support_weight=...)`
+5. if disabled:
+   - store `edge_support_weight=None`
+
+This keeps the feature local to graph construction and avoids recomputing support distances during training.
+
+## 8.3 Validation rules
+Add explicit validation:
+- `support_decay_km` must be `None` or `> 0`
+- `support_floor` must satisfy `0 <= support_floor <= 1`
+
+If invalid, raise hard errors.
+
+## 9. Model-Side Implementation Plan
+File:
+- `src/multispecies_resistance/model.py`
+
+## 9.1 Keep current API largely intact
+The simplest isolated change is to modify `resistance_matrix(...)` to accept an optional edge attenuation vector.
+
+Suggested change:
+
+```python
+def resistance_matrix(
+    self,
+    species_idx: int,
+    edge_index: torch.Tensor,
+    edge_feat: torch.Tensor,
+    num_nodes: int,
+    edge_support_weight: torch.Tensor | None = None,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ...
+```
+
+Behavior:
+- if `edge_support_weight is None`, preserve current conductance construction exactly
+- if provided, attenuate conductance before building the Laplacian
+
+## 9.2 Exact attenuation point
+Current logic:
+
+```python
+resistance = softplus(shared + species) + 1e-4
+conductance = 1.0 / resistance
+```
+
+Planned logic:
+
+```python
+resistance = softplus(shared + species) + 1e-4
+conductance = 1.0 / resistance
+if edge_support_weight is not None:
+    conductance = conductance * edge_support_weight
+```
+
+This is the cleanest insertion point.
+
+Important point:
+- do not modify logits
+- do not modify `edge_features`
+- do not modify loss definitions
+- only attenuate conductance when constructing the Laplacian
+
+This keeps the feature localized and easy to disable.
+
+## 10. Training Loop Changes
+File:
+- `src/multispecies_resistance/train.py`
+
+## 10.1 Pass optional support weights into the model
+Inside `train_model(...)`, when looping over `species_graphs`:
+- if `g.edge_support_weight is not None`, convert it to torch and pass it to `model.resistance_matrix(...)`
+- otherwise pass `None`
+
+This is the only training-loop change needed.
+
+## 10.2 Do not add new training hyperparameters here
+The toggle should live in graph construction, not in `train_model(...)`.
+
+Reason:
+- support attenuation is a property of the graph/data support geometry
+- it should be baked into the graph object and then consumed uniformly during training
+- this makes it much easier to reason about and easier to turn off by rebuilding graphs without support attenuation
+
+## 11. Optional Debug/Inspection Support
+This is optional and should not block the first implementation.
+
+Possible additions later:
+- helper to plot `edge_support_weight` on a graph
+- helper to inspect node distance-to-support statistics
+
+These should not be part of the first pass unless needed for debugging.
+
+## 12. Documentation Plan
+Files to update when implementing:
 - `src/multispecies_resistance/graph.py` docstrings
+- `src/multispecies_resistance/train.py` docstrings
+- `src/multispecies_resistance/model.py` docstrings
 - `README.md`
 - `docs/graph.md`
-- `docs/train.md` if the new builder is wired into `build_species_graphs(...)`
-- notebooks/examples if the geodesic builder becomes the default or recommended path
+- `docs/train.md`
 
-Documentation points to include:
-- the geodesic builder preserves native icosphere adjacency instead of using Delaunay
-- `spacing_km` selects the nearest available geodesic resolution
-- `grid_type` is accepted for compatibility but only triangular meshes are supported
-- clipping does not add edges or retriangulate
+Key documentation points:
+- support attenuation is optional and disabled by default
+- it down-weights conductance on edges far from occupied nodes
+- it uses graph distance, not Euclidean distance
+- it is controlled by `support_decay_km`
+- setting `support_decay_km=None` fully disables it
 
-## 8. Open Design Choices To Resolve During Implementation
-These do not block planning, but they should be decided explicitly during coding.
+## 13. Validation Plan
 
-1. Should `build_geodesic_mesh_graph(...)` keep the full global icosphere and clip it, or should it first restrict candidate vertices by a coarse geographic window before clipping?
-- Recommendation: start with full icosphere at moderate subdivision levels; optimize later only if performance becomes a problem.
+## 13.1 Static validation
+1. with `support_decay_km=None`, all existing call paths still work
+2. `SpeciesGraph` can still be constructed without `edge_support_weight`
+3. `train_model(...)` still works on graphs without support weights
 
-2. Should subdivision selection bias toward slightly coarser or slightly finer edge lengths when no exact spacing match exists?
-- Recommendation: bias slightly coarse to control graph size and reduce overfitting risk.
+## 13.2 Behavioral validation when enabled
+1. edges adjacent to occupied nodes have support weight near `1`
+2. edges deep in unsupported regions have support weight near `support_floor`
+3. support weights are monotone with graph distance from occupied nodes
+4. no NaNs or infs in support weights
 
-3. Should the largest connected component be mandatory or optional?
-- Recommendation: mandatory by default for compatibility and robustness.
+## 13.3 End-to-end validation
+1. build graphs with and without support attenuation on the same dataset
+2. verify identical outputs when attenuation is off
+3. verify that unsupported remote regions contribute less when attenuation is on
+4. inspect inferred edge patterns to confirm remote unsupported regions are suppressed
 
-4. Should `build_dense_mesh_graph(...)` eventually delegate internally to `build_geodesic_mesh_graph(...)`?
-- Recommendation: yes, but only after validating that downstream plotting and training behavior remain stable.
+## 13.4 Numerical validation
+1. Laplacian remains well-defined when support weights are near `support_floor`
+2. effective resistance computation still succeeds
+3. no disconnected-graph numerical failures are introduced solely by attenuation
 
-## 9. Implementation Order
-1. Add `trimesh` dependency.
-2. Add helper functions for face-to-edge conversion, vertex conversion, spacing-to-subdivision mapping, clipping, and connected-component cleanup.
-3. Implement `build_geodesic_mesh_graph(...)` with the same external contract as `build_dense_mesh_graph(...)`.
-4. Validate standalone outputs for shape, connectivity, and edge-length regularity.
-5. Compare graph geometry visually against current dense mesh on the same sample set.
-6. Only after validation, decide whether to wire it in as the default dense-mesh implementation.
+## 14. Reasons This Design Is Easy To Toggle Off
+This design is intentionally easy to disable because:
+- the public toggle is a single parameter: `support_decay_km=None`
+- all graph-preprocessing code is behind one conditional in `build_species_graphs(...)`
+- all model behavior changes are behind one optional argument in `resistance_matrix(...)`
+- when disabled, `edge_support_weight=None` flows through the system and current behavior is preserved exactly
+- no edge features, losses, or graph topology are modified when disabled
+
+## 15. Implementation Order
+1. add `edge_support_weight` field to `SpeciesGraph`
+2. add `compute_edge_support_weight(...)` helper to `graph.py`
+3. add optional `support_decay_km` and `support_floor` to `build_species_graphs(...)`
+4. compute/store support weights during graph construction when enabled
+5. extend `model.resistance_matrix(...)` with optional `edge_support_weight`
+6. pass support weights through `train_model(...)`
+7. update docs and examples
+8. run compile and basic graph-building checks
+
+## 16. Explicit Non-Goals For The First Pass
+To keep the feature isolated and simple, do not do any of the following in the first implementation:
+- do not change `edge_features`
+- do not add support weight as a learned feature column
+- do not prune edges or nodes from the graph
+- do not introduce species-specific support-decay models beyond the per-graph computation
+- do not modify CV logic
+- do not add plotting/UI features unless needed for debugging

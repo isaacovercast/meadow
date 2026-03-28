@@ -1,6 +1,6 @@
-# Multi-species resistance prototype
+# Meadow: Multispecies EstimAtion of Dispersal On netWorks
 
-Minimal Python prototype for learning shared and species-specific migration resistance on spatial graphs from SNP data.
+A Python machine-learning tool for quantifying shared and species-specific migration resistance on spatial graphs from SNP data.
 
 ## What this does
 - Keeps species data at the observed sample level (`name`, `genotypes`, `sample_coords`)
@@ -13,12 +13,6 @@ Minimal Python prototype for learning shared and species-specific migration resi
 ```bash
 conda env create -f environment.yml
 conda activate multispecies-resistance
-```
-
-## Run the synthetic example
-
-```bash
-python examples/minimal_prototype.py
 ```
 
 ## Core data model

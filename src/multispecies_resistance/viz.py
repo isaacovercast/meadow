@@ -6,24 +6,7 @@ import numpy as np
 import matplotlib.colors as clr
 import math
 
-eems_colors = [
-    "#994000",
-    "#CC5800",
-    "#FF8F33",
-    "#FFAD66",
-    "#FFCA99",
-    "#FFE6CC",
-    "#FBFBFB",
-    "#CCFDFF",
-    "#99F8FF",
-    "#66F0FF",
-    "#33E4FF",
-    "#00AACC",
-    "#007A99",
-]
-edge_cmap = clr.LinearSegmentedColormap.from_list(
-    "eems_colors", eems_colors[::-1], N=256)
-
+edge_cmap = "RdBu_r"
 
 def _normalize_explore_kwargs(
     edge_values: np.ndarray,
@@ -100,7 +83,7 @@ def _explore_safe(gdf, edge_values: np.ndarray, cmap, explore_kwargs: dict | Non
         return gdf.explore(**kwargs)
     except TypeError:
         # Fallback for geopandas/folium versions that choke on colormap objects/lists.
-        kwargs["cmap"] = "viridis"
+        kwargs["cmap"] = "RdBu_r"
         if kwargs.get("vmin") is None or kwargs.get("vmax") is None:
             finite = np.asarray(edge_values, dtype=float)
             finite = finite[np.isfinite(finite)]
@@ -166,6 +149,7 @@ def plot_species_resistance(
     species_idx: int = 0,
     show_sites: bool = False,
     sample_coords: np.ndarray | None = None,
+    value_label: str = "Edge resistance",
 ):
     """Plot one species graph with edges colored by resistance values.
 
@@ -203,6 +187,8 @@ def plot_species_resistance(
         Whether to overlay sample/site points.
     sample_coords : np.ndarray | None, optional
         Coordinates to plot when `show_sites=True`; defaults to `site_coords`.
+    value_label : str, optional
+        Colorbar label for the plotted edge values.
 
     Returns
     -------
@@ -259,7 +245,7 @@ def plot_species_resistance(
     ax.autoscale()
     ax.set_xlabel("Longitude" if basemap is None or basemap is False else "X")
     ax.set_ylabel("Latitude" if basemap is None or basemap is False else "Y")
-    plt.colorbar(lc, ax=ax, label="Edge resistance")
+    plt.colorbar(lc, ax=ax, label=value_label)
 
     xlim = None
     ylim = None
@@ -334,6 +320,7 @@ def plot_multi_edge_resistance(
     explore_kwargs: dict | None = None,
     overlay: bool = False,
     overlay_stat: str = "mean",
+    combine_with_shared: bool = True,
     show_sites: bool = False,
     sample_coords_list: list[np.ndarray] | None = None,
     ncols: int = 2,
@@ -367,6 +354,10 @@ def plot_multi_edge_resistance(
         If `True`, aggregate all species into one edge map.
     overlay_stat : str, optional
         Aggregation statistic for overlay mode (`"mean"` or `"std"`).
+    combine_with_shared : bool, optional
+        If `True`, plot the full species resistance obtained by combining the
+        shared and species-specific components. If `False`, plot only the
+        species-specific logit component.
     show_sites : bool, optional
         Whether to overlay sample/site points.
     sample_coords_list : list[np.ndarray] | None, optional
@@ -412,6 +403,16 @@ def plot_multi_edge_resistance(
             return _site_coords[:, 1], _site_coords[:, 0], coords_crs
         return _site_coords[:, 0], _site_coords[:, 1], coords_crs
 
+    def _edge_values_for_species(species_idx: int, graph) -> np.ndarray:
+        edge_feat = torch.from_numpy(graph.edge_features)
+        if combine_with_shared:
+            edge_values, _, _ = model.edge_resistance(species_idx, edge_feat)
+        else:
+            _, edge_values = model.edge_logits(species_idx, edge_feat)
+        return edge_values.detach().numpy()
+
+    colorbar_label = "Edge resistance" if combine_with_shared else "Species-specific edge logit"
+
     if overlay:
         fig, ax = plt.subplots(figsize=figsize)
         values_by_species = []
@@ -431,10 +432,7 @@ def plot_multi_edge_resistance(
                 raise ValueError("overlay=True requires identical node_coords across species.")
 
         for idx, (sp, g) in enumerate(zip(species_list, graphs)):
-            edge_feat = torch.from_numpy(g.edge_features)
-            edge_resistance, _, _ = model.edge_resistance(idx, edge_feat)
-            edge_resistance = edge_resistance.detach().numpy()
-            values_by_species.append(edge_resistance)
+            values_by_species.append(_edge_values_for_species(idx, g))
             x, y, crs = _coords_for_plot(g.node_coords)
             xs_all.append(x)
             ys_all.append(y)
@@ -460,7 +458,7 @@ def plot_multi_edge_resistance(
         ax.autoscale()
         ax.set_xlabel("Longitude" if basemap is None or basemap is False else "X")
         ax.set_ylabel("Latitude" if basemap is None or basemap is False else "Y")
-        plt.colorbar(lc, ax=ax, label="Edge resistance")
+        plt.colorbar(lc, ax=ax, label=colorbar_label)
 
         if show_sites:
             for sp_idx, sp in enumerate(species_list):
@@ -528,9 +526,7 @@ def plot_multi_edge_resistance(
     maps = []
 
     for idx, (sp, g) in enumerate(zip(species_list, graphs)):
-        edge_feat = torch.from_numpy(g.edge_features)
-        edge_resistance, _, _ = model.edge_resistance(idx, edge_feat)
-        edge_resistance = edge_resistance.detach().numpy()
+        edge_values = _edge_values_for_species(idx, g)
 
         ax_i = axes_arr[idx]
         coords_plot = (
@@ -539,7 +535,7 @@ def plot_multi_edge_resistance(
         ax_i, gdf_i, fmap_i = plot_species_resistance(
             g.node_coords,
             g.edge_index,
-            edge_resistance,
+            edge_values,
             ax=ax_i,
             cmap=cmap,
             basemap=basemap,
@@ -550,6 +546,7 @@ def plot_multi_edge_resistance(
             explore_kwargs=explore_kwargs,
             show_sites=show_sites,
             sample_coords=coords_plot if show_sites else None,
+            value_label=colorbar_label,
         )
         ax_i.set_title(sp.name)
         gdfs.append(gdf_i)

@@ -8,6 +8,7 @@ from .graph import (
     build_delaunay_graph,
     build_dense_mesh_graph,
     build_geodesic_mesh_graph,
+    compute_edge_support_weight,
     edge_features,
     project_coords,
     standardize_features,

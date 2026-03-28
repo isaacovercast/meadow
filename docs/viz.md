@@ -40,6 +40,7 @@ Parameters:
 - `species_idx`: species index used with `model`.
 - `show_sites`: overlay points on top of edges.
 - `sample_coords`: alternate point coordinates for overlays.
+- `value_label`: colorbar label for the plotted edge values.
 
 Returns:
 
@@ -59,6 +60,7 @@ Parameters:
 - `explore_kwargs`: options for interactive rendering.
 - `overlay`: if `True`, aggregate species into one edge map.
 - `overlay_stat`: aggregation statistic (`"mean"` or `"std"`).
+- `combine_with_shared`: if `True`, plot the full combined species resistance; if `False`, plot only the species-specific component.
 - `show_sites`: overlay point coordinates.
 - `sample_coords_list`: optional per-species point coordinate overrides.
 - `ncols`: subplot columns when `overlay=False`.

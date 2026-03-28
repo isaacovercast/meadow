@@ -15,6 +15,7 @@ Fields:
 - `pair_i`, `pair_j`, `pair_dist`: pairwise training targets.
 - `num_nodes`: node count.
 - `edge_nbr_i`, `edge_nbr_j`: precomputed neighboring-edge pairs for edge smoothing penalties.
+- `edge_support_weight`: optional per-edge attenuation weight derived from distance to occupied nodes.
 - `val_pair_i`, `val_pair_j`, `val_pair_dist`: optional validation targets.
 
 ## `SpeciesGraph.plot(edge_feature_idx=None, ...)`
@@ -84,6 +85,21 @@ Parameters:
 Returns:
 
 - `(edge_nbr_i, edge_nbr_j)`: parallel arrays of edge indices where each pair shares a node.
+
+## `compute_edge_support_weight(node_coords, edge_index, occupied_nodes, support_decay_km, support_floor=0.01)`
+Computes optional per-edge support weights by measuring graph distance from each node to the nearest occupied node and converting those distances into a smooth decay.
+
+Parameters:
+
+- `node_coords`: `N x 2` graph node coordinates in `lat, lon`.
+- `edge_index`: `E x 2` edge list over graph nodes.
+- `occupied_nodes`: node ids with observed samples.
+- `support_decay_km`: positive decay scale in kilometers.
+- `support_floor`: lower bound retained on very distant edges.
+
+Returns:
+
+- `edge_support_weight`: length-`E` attenuation values in `[support_floor, 1]`.
 
 ## `build_dense_mesh_graph(...)`
 Constructs a shared mesh covering all species and returns mesh nodes plus graph edges.

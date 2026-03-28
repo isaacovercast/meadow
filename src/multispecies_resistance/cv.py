@@ -483,6 +483,7 @@ def _clone_graph_for_fold(
         num_nodes=graph.num_nodes,
         edge_nbr_i=graph.edge_nbr_i,
         edge_nbr_j=graph.edge_nbr_j,
+        edge_support_weight=graph.edge_support_weight,
         val_pair_i=graph.pair_i[val_mask].copy() if np.any(val_mask) else None,
         val_pair_j=graph.pair_j[val_mask].copy() if np.any(val_mask) else None,
         val_pair_dist=graph.pair_dist[val_mask].copy() if np.any(val_mask) else None,

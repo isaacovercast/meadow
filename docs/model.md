@@ -2,6 +2,8 @@
 
 `multispecies_resistance.model` defines neural components that map edge features to resistance and then compute effective resistance between all node pairs via graph Laplacian algebra. The architecture combines a shared edge network with species-specific deviation networks.
 
+![Model Architecture](model_architecture.svg)
+
 ## `EdgeMLP`
 A small MLP that predicts one scalar edge logit from edge features.
 
@@ -63,7 +65,7 @@ Returns:
 - `shared_logits`: shared logits.
 - `species_logits`: species logits.
 
-### `resistance_matrix(species_idx, edge_index, edge_feat, num_nodes)`
+### `resistance_matrix(species_idx, edge_index, edge_feat, num_nodes, edge_support_weight=None)`
 Builds the graph Laplacian from conductances and computes effective resistance between all node pairs.
 
 Parameters:
@@ -72,6 +74,7 @@ Parameters:
 - `edge_index`: `E x 2` edge list.
 - `edge_feat`: `E x F` edge-feature tensor.
 - `num_nodes`: number of nodes in the graph.
+- `edge_support_weight`: optional length-`E` conductance attenuation vector.
 
 Returns:
 

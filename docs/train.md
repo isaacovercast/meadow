@@ -9,6 +9,7 @@
 - `sample_coords`: original observed sample coordinates.
 - `edge_index` and `edge_features`: edge topology and edge covariates.
 - `edge_nbr_i` and `edge_nbr_j`: neighboring-edge pairs used for optional smoothing penalties.
+- `edge_support_weight`: optional attenuation applied to conductance far from occupied nodes.
 - `pair_i`, `pair_j`, `pair_dist`: pairwise training targets.
 - optional validation pairs (`val_pair_i`, `val_pair_j`, `val_pair_dist`).
 
@@ -21,6 +22,8 @@ Key behavior:
 - `input_graph=...`: uses provided global graph nodes and assigns each sample to the nearest graph node.
 - `mesh_grid_type`: controls the layout of the default shared mesh.
 - `mesh_spacing_km=None`: automatically picks a spacing from nearest-neighbor sample distances.
+- `support_decay_km`: optional graph-distance decay scale for down-weighting unsupported edges; `None` disables the feature.
+- `support_floor`: lower bound retained on distant edges when support attenuation is enabled.
 
 Environmental extraction:
 

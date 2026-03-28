@@ -114,6 +114,7 @@ class MultiSpeciesResistanceModel(nn.Module):
         edge_index: torch.Tensor,
         edge_feat: torch.Tensor,
         num_nodes: int,
+        edge_support_weight: torch.Tensor | None = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Build a graph Laplacian and compute effective resistance between nodes.
 
@@ -127,6 +128,8 @@ class MultiSpeciesResistanceModel(nn.Module):
             `E x F` edge-feature tensor.
         num_nodes : int
             Number of graph nodes.
+        edge_support_weight : torch.Tensor | None, optional
+            Optional length-`E` attenuation factor applied to edge conductance.
 
         Returns
         -------
@@ -135,6 +138,11 @@ class MultiSpeciesResistanceModel(nn.Module):
         """
         resistance, shared, species = self.edge_resistance(species_idx, edge_feat)
         conductance = 1.0 / resistance
+        if edge_support_weight is not None:
+            conductance = conductance * edge_support_weight.to(
+                device=edge_feat.device,
+                dtype=edge_feat.dtype,
+            )
 
         i = edge_index[:, 0]
         j = edge_index[:, 1]

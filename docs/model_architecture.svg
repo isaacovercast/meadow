@@ -1,0 +1,147 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1680" height="860" viewBox="0 0 1680 860" role="img" aria-labelledby="title desc">
+  <title id="title">Multi-Species Resistance Neural Network</title>
+  <desc id="desc">Diagram showing environmental rasters and sample locations feeding edge features, genotype data feeding pairwise distance targets, and the shared plus species-specific edge networks used to predict effective resistance and genetic distance.</desc>
+
+  <defs>
+    <style>
+      .panel { fill: rgba(220,220,220,0.62); stroke: #222222; stroke-width: 1.5; }
+      .thin { fill: rgba(235,235,235,0.72); stroke: #222222; stroke-width: 1.2; }
+      .line { stroke: #222222; stroke-width: 1.7; fill: none; }
+      .guide { stroke: #555555; stroke-width: 1.2; fill: none; }
+      .dot { fill: #222222; }
+      .soft { fill: none; stroke: #222222; stroke-width: 1.1; opacity: 0.8; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1680" height="860" fill="#ffffff"/>
+
+  <!-- Environmental raster stack -->
+  <rect x="58" y="156" width="164" height="124" class="panel"/>
+  <rect x="72" y="144" width="164" height="124" class="panel"/>
+  <rect x="86" y="132" width="164" height="124" class="panel"/>
+  <path d="M94 208 C118 172, 146 238, 176 196 S236 162, 246 220" class="soft"/>
+  <path d="M94 224 C124 252, 150 166, 182 208 S226 246, 246 182" class="soft"/>
+  <path d="M94 178 C124 162, 148 226, 180 188 S230 154, 246 210" class="soft"/>
+
+  <!-- Sample locations -->
+  <circle cx="116" cy="168" r="4.5" class="dot"/>
+  <circle cx="138" cy="212" r="4.5" class="dot"/>
+  <circle cx="160" cy="186" r="4.5" class="dot"/>
+  <circle cx="188" cy="230" r="4.5" class="dot"/>
+  <circle cx="214" cy="176" r="4.5" class="dot"/>
+  <circle cx="232" cy="218" r="4.5" class="dot"/>
+
+  <!-- Small graph / edges -->
+  <line x1="302" y1="182" x2="352" y2="158" class="line"/>
+  <line x1="352" y1="158" x2="388" y2="206" class="line"/>
+  <line x1="302" y1="182" x2="338" y2="232" class="line"/>
+  <line x1="338" y1="232" x2="388" y2="206" class="line"/>
+  <line x1="338" y1="232" x2="404" y2="258" class="line"/>
+  <line x1="388" y1="206" x2="404" y2="258" class="line"/>
+  <circle cx="302" cy="182" r="5" class="dot"/>
+  <circle cx="352" cy="158" r="5" class="dot"/>
+  <circle cx="388" cy="206" r="5" class="dot"/>
+  <circle cx="338" cy="232" r="5" class="dot"/>
+  <circle cx="404" cy="258" r="5" class="dot"/>
+
+  <!-- Edge feature tensor -->
+  <rect x="454" y="126" width="132" height="208" class="panel"/>
+  <rect x="468" y="114" width="132" height="208" class="panel"/>
+  <rect x="482" y="102" width="132" height="208" class="panel"/>
+  <rect x="496" y="90" width="132" height="208" class="panel"/>
+
+  <!-- Arrows from bio inputs to edge features -->
+  <line x1="250" y1="196" x2="496" y2="184" class="guide"/>
+  <line x1="404" y1="206" x2="496" y2="236" class="guide"/>
+
+  <!-- Genotype matrix -->
+  <rect x="74" y="540" width="170" height="190" class="panel"/>
+  <rect x="88" y="528" width="170" height="190" class="panel"/>
+  <rect x="102" y="516" width="170" height="190" class="panel"/>
+  <g stroke="#222222" stroke-width="1.2">
+    <line x1="118" y1="542" x2="258" y2="542"/>
+    <line x1="118" y1="568" x2="258" y2="568"/>
+    <line x1="118" y1="594" x2="258" y2="594"/>
+    <line x1="118" y1="620" x2="258" y2="620"/>
+    <line x1="118" y1="646" x2="258" y2="646"/>
+    <line x1="118" y1="672" x2="258" y2="672"/>
+    <line x1="118" y1="698" x2="258" y2="698"/>
+    <line x1="134" y1="526" x2="134" y2="712"/>
+    <line x1="158" y1="526" x2="158" y2="712"/>
+    <line x1="182" y1="526" x2="182" y2="712"/>
+    <line x1="206" y1="526" x2="206" y2="712"/>
+    <line x1="230" y1="526" x2="230" y2="712"/>
+  </g>
+  <g class="dot">
+    <circle cx="122" cy="535" r="3"/>
+    <circle cx="145" cy="560" r="3"/>
+    <circle cx="172" cy="585" r="3"/>
+    <circle cx="193" cy="613" r="3"/>
+    <circle cx="218" cy="640" r="3"/>
+    <circle cx="242" cy="666" r="3"/>
+    <circle cx="160" cy="684" r="3"/>
+    <circle cx="207" cy="692" r="3"/>
+  </g>
+
+  <!-- Pair target vector -->
+  <rect x="360" y="578" width="24" height="134" class="thin"/>
+  <rect x="372" y="566" width="24" height="134" class="thin"/>
+  <line x1="272" y1="612" x2="372" y2="632" class="guide"/>
+
+  <!-- Split guides from edge tensor -->
+  <line x1="628" y1="186" x2="734" y2="156" class="guide"/>
+  <line x1="628" y1="212" x2="734" y2="564" class="guide"/>
+
+  <!-- Shared branch -->
+  <rect x="734" y="178" width="84" height="118" class="panel"/>
+  <rect x="746" y="168" width="84" height="118" class="panel"/>
+  <rect x="758" y="158" width="84" height="118" class="panel"/>
+  <rect x="884" y="192" width="68" height="92" class="panel"/>
+  <rect x="894" y="184" width="68" height="92" class="panel"/>
+  <rect x="904" y="176" width="68" height="92" class="panel"/>
+  <rect x="1032" y="206" width="18" height="80" class="thin"/>
+  <rect x="1041" y="198" width="18" height="80" class="thin"/>
+  <rect x="1050" y="190" width="18" height="80" class="thin"/>
+  <line x1="842" y1="214" x2="884" y2="226" class="line"/>
+  <line x1="972" y1="230" x2="1032" y2="234" class="line"/>
+
+  <!-- Species branch -->
+  <rect x="734" y="586" width="84" height="118" class="panel"/>
+  <rect x="746" y="576" width="84" height="118" class="panel"/>
+  <rect x="758" y="566" width="84" height="118" class="panel"/>
+  <rect x="884" y="600" width="68" height="92" class="panel"/>
+  <rect x="894" y="592" width="68" height="92" class="panel"/>
+  <rect x="904" y="584" width="68" height="92" class="panel"/>
+  <rect x="1032" y="614" width="18" height="80" class="thin"/>
+  <rect x="1041" y="606" width="18" height="80" class="thin"/>
+  <rect x="1050" y="598" width="18" height="80" class="thin"/>
+  <line x1="842" y1="622" x2="884" y2="634" class="line"/>
+  <line x1="972" y1="638" x2="1032" y2="642" class="line"/>
+
+  <!-- Merge / edge resistance vector -->
+  <rect x="1178" y="246" width="28" height="384" class="thin"/>
+  <rect x="1192" y="232" width="28" height="384" class="thin"/>
+  <line x1="1068" y1="232" x2="1192" y2="350" class="line"/>
+  <line x1="1068" y1="638" x2="1192" y2="512" class="line"/>
+
+  <!-- Effective resistance matrix -->
+  <polygon points="1320,240 1518,240 1618,326 1420,326" class="panel"/>
+  <polygon points="1320,240 1420,326 1420,620 1320,534" class="thin"/>
+  <polygon points="1420,326 1618,326 1618,620 1420,620" class="panel"/>
+  <line x1="1220" y1="430" x2="1320" y2="430" class="line"/>
+
+  <!-- Output vector -->
+  <polygon points="1502,676 1570,720 1570,792 1502,836" class="panel" transform="translate(-20,-190)"/>
+  <line x1="1618" y1="430" x2="1482" y2="520" class="guide"/>
+  <line x1="1420" y1="520" x2="1482" y2="520" class="line"/>
+
+  <!-- Calibration input to output -->
+  <circle cx="1414" cy="700" r="5" class="dot"/>
+  <circle cx="1446" cy="700" r="5" class="dot"/>
+  <line x1="1430" y1="694" x2="1490" y2="560" class="guide"/>
+
+  <!-- Target stream into loss -->
+  <line x1="396" y1="632" x2="1378" y2="744" class="guide"/>
+  <line x1="1510" y1="520" x2="1378" y2="744" class="guide"/>
+  <circle cx="1378" cy="744" r="8" class="dot"/>
+</svg>

@@ -49,6 +49,7 @@ ax, gdf_edges = graphs[0].plot(edge_feature_idx=0, basemap=True)
 - graph geometry (`node_coords`, `edge_index`)
 - edge covariates (`edge_features`)
 - neighboring-edge pairs for optional smoothing penalties (`edge_nbr_i`, `edge_nbr_j`)
+- optional edge support attenuation weights (`edge_support_weight`)
 - original sample locations (`sample_coords`)
 - pairwise training targets (`pair_i`, `pair_j`, `pair_dist`)
 
@@ -98,6 +99,17 @@ raster_paths = download_climate_layers(
 graphs, stats = build_species_graphs(
     species_list,
     raster_paths=raster_paths,
+)
+```
+
+You can also down-weight unsupported regions of the graph during graph construction:
+
+```python
+graphs, stats = build_species_graphs(
+    species_list,
+    raster_paths=raster_paths,
+    support_decay_km=150.0,
+    support_floor=0.05,
 )
 ```
 

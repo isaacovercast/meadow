@@ -38,6 +38,9 @@ class SpeciesGraph:
         Edge indices for the first member of each neighboring-edge pair.
     edge_nbr_j : np.ndarray | None, optional
         Edge indices for the second member of each neighboring-edge pair.
+    edge_support_weight : np.ndarray | None, optional
+        Optional per-edge attenuation weights derived from graph distance to
+        occupied nodes.
     val_pair_i : np.ndarray | None, optional
         Optional validation pair row indices.
     val_pair_j : np.ndarray | None, optional
@@ -57,6 +60,7 @@ class SpeciesGraph:
     num_nodes: int
     edge_nbr_i: np.ndarray | None = None
     edge_nbr_j: np.ndarray | None = None
+    edge_support_weight: np.ndarray | None = None
     val_pair_i: np.ndarray | None = None
     val_pair_j: np.ndarray | None = None
     val_pair_dist: np.ndarray | None = None
@@ -71,7 +75,7 @@ class SpeciesGraph:
         coords_crs: str = "EPSG:4326",
         sample_size: float = 12.0,
         edge_width: float = 2.0,
-        edge_cmap: str = "viridis",
+        edge_cmap: str = "RdBu_r",
         sample_color: str = "black",
         sample_alpha: float = 0.8,
         edge_alpha: float = 0.9,
@@ -812,6 +816,89 @@ def build_edge_neighbor_pairs(
     return pair_array[:, 0], pair_array[:, 1]
 
 
+def compute_edge_support_weight(
+    node_coords: np.ndarray,
+    edge_index: np.ndarray,
+    occupied_nodes: np.ndarray,
+    support_decay_km: float,
+    support_floor: float = 0.01,
+) -> np.ndarray:
+    """Compute per-edge support weights from graph distance to occupied nodes.
+
+    Parameters
+    ----------
+    node_coords : np.ndarray
+        `N x 2` graph node coordinates in `lat, lon`.
+    edge_index : np.ndarray
+        `E x 2` edge list over graph nodes.
+    occupied_nodes : np.ndarray
+        Length-`S` integer array of nodes with observed samples.
+    support_decay_km : float
+        Positive exponential decay scale in kilometers.
+    support_floor : float, optional
+        Minimum support retained far from observed data.
+
+    Returns
+    -------
+    np.ndarray
+        Length-`E` support weight in `[support_floor, 1]` for each edge.
+    """
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import dijkstra
+
+    if support_decay_km <= 0.0:
+        raise ValueError("support_decay_km must be > 0.")
+    if not (0.0 <= support_floor <= 1.0):
+        raise ValueError("support_floor must lie in [0, 1].")
+
+    nodes = np.asarray(node_coords, dtype=np.float64)
+    edges = np.asarray(edge_index, dtype=np.int64)
+    sources = np.unique(np.asarray(occupied_nodes, dtype=np.int64))
+
+    if nodes.ndim != 2 or nodes.shape[1] != 2:
+        raise ValueError("node_coords must have shape (N, 2).")
+    if edges.ndim != 2 or edges.shape[1] != 2:
+        raise ValueError("edge_index must have shape (E, 2).")
+    if sources.size == 0:
+        raise ValueError("occupied_nodes is empty.")
+
+    num_nodes = nodes.shape[0]
+    if np.any(sources < 0) or np.any(sources >= num_nodes):
+        raise ValueError("occupied_nodes contains indices outside node_coords.")
+    if edges.size == 0:
+        return np.empty(0, dtype=np.float64)
+
+    edge_lengths = haversine_km(nodes[edges[:, 0]], nodes[edges[:, 1]])
+    graph = coo_matrix(
+        (
+            np.concatenate([edge_lengths, edge_lengths]),
+            (
+                np.concatenate([edges[:, 0], edges[:, 1]]),
+                np.concatenate([edges[:, 1], edges[:, 0]]),
+            ),
+        ),
+        shape=(num_nodes, num_nodes),
+        dtype=np.float64,
+    ).tocsr()
+
+    dist = dijkstra(graph, directed=False, indices=sources)
+    if np.ndim(dist) == 2:
+        dist_to_supported = np.min(dist, axis=0)
+    else:
+        dist_to_supported = np.asarray(dist, dtype=np.float64)
+    dist_to_supported = np.asarray(dist_to_supported, dtype=np.float64)
+    finite = np.isfinite(dist_to_supported)
+    if not np.all(finite):
+        max_finite = float(np.max(dist_to_supported[finite])) if np.any(finite) else 0.0
+        dist_to_supported[~finite] = max_finite + support_decay_km
+
+    node_support = support_floor + (1.0 - support_floor) * np.exp(
+        -dist_to_supported / support_decay_km
+    )
+    edge_support = np.minimum(node_support[edges[:, 0]], node_support[edges[:, 1]])
+    return edge_support.astype(np.float64, copy=False)
+
+
 def _filter_long_mesh_edges(
     mesh_coords: np.ndarray,
     edge_index: np.ndarray,
@@ -1101,10 +1188,12 @@ def edge_features(
     geo_dist = haversine_km(a, b)[:, None]
     if site_env is None or site_env.size == 0:
         env_diff = np.zeros((edge_index.shape[0], 0), dtype=np.float64)
+        env_mid = np.zeros((edge_index.shape[0], 0), dtype=np.float64)
     else:
         env_diff = np.abs(site_env[edge_index[:, 0]] - site_env[edge_index[:, 1]])
+        env_mid = 0.5 * (site_env[edge_index[:, 0]] + site_env[edge_index[:, 1]])
 
-    feats = np.concatenate([geo_dist, env_diff], axis=1)
+    feats = np.concatenate([geo_dist, env_mid, env_diff], axis=1)
     return feats.astype(np.float64)
 
 

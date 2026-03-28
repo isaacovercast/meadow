@@ -12,6 +12,7 @@ from multispecies_resistance.graph import (
     build_edge_neighbor_pairs,
     build_dense_mesh_graph,
     build_geodesic_mesh_graph,
+    compute_edge_support_weight,
     edge_features,
     project_coords,
     standardize_features,
@@ -140,6 +141,8 @@ def build_species_graphs(
     raster_coord_order: str = "latlon",
     raster_coords_crs: str = "EPSG:4326",
     use_geodesic: bool = False,
+    support_decay_km: float | None = None,
+    support_floor: float = 0.01,
 ) -> tuple[List[SpeciesGraph], dict | None]:
     """Convert sample-level species inputs into graph-based training datasets.
 
@@ -149,10 +152,16 @@ def build_species_graphs(
     `mesh_spacing_km` is `None`, a spacing is chosen automatically from
     nearest-neighbor sample distances.
     Environmental covariates are sampled at graph nodes when raster inputs are
-    provided.
+    provided. Optional support attenuation weights can also be precomputed from
+    graph distance to occupied nodes; setting `support_decay_km=None` disables
+    this behavior.
     """
     if not species_list:
         raise ValueError("species_list is empty")
+    if support_decay_km is not None and support_decay_km <= 0.0:
+        raise ValueError("support_decay_km must be > 0 when provided.")
+    if not (0.0 <= support_floor <= 1.0):
+        raise ValueError("support_floor must lie in [0, 1].")
 
     graphs: List[SpeciesGraph] = []
     all_feats = []
@@ -240,6 +249,15 @@ def build_species_graphs(
                 pair_dist = dist[pair_i, pair_j]
                 pair_i = valid[pair_i]
                 pair_j = valid[pair_j]
+                edge_support_weight = None
+                if support_decay_km is not None:
+                    edge_support_weight = compute_edge_support_weight(
+                        node_coords,
+                        edge_index,
+                        valid,
+                        support_decay_km=support_decay_km,
+                        support_floor=support_floor,
+                    )
 
                 graph = SpeciesGraph(
                     name=sp.name,
@@ -253,6 +271,7 @@ def build_species_graphs(
                     num_nodes=node_coords.shape[0],
                     edge_nbr_i=edge_nbr_i,
                     edge_nbr_j=edge_nbr_j,
+                    edge_support_weight=edge_support_weight,
                 )
                 graphs.append(graph)
                 all_feats.append(shared_edge_features)
@@ -318,6 +337,15 @@ def build_species_graphs(
                 pair_dist = dist[pair_i, pair_j]
                 pair_i = valid[pair_i]
                 pair_j = valid[pair_j]
+                edge_support_weight = None
+                if support_decay_km is not None:
+                    edge_support_weight = compute_edge_support_weight(
+                        mesh_coords,
+                        edge_index,
+                        valid,
+                        support_decay_km=support_decay_km,
+                        support_floor=support_floor,
+                    )
 
                 graph = SpeciesGraph(
                     name=sp.name,
@@ -331,6 +359,7 @@ def build_species_graphs(
                     num_nodes=mesh_coords.shape[0],
                     edge_nbr_i=edge_nbr_i,
                     edge_nbr_j=edge_nbr_j,
+                    edge_support_weight=edge_support_weight,
                 )
                 graphs.append(graph)
                 all_feats.append(shared_edge_features)
@@ -548,9 +577,14 @@ def train_model(
         for s, g in enumerate(species_graphs):
             edge_feat = torch.from_numpy(g.edge_features)
             edge_index = torch.from_numpy(g.edge_index)
+            edge_support_weight = (
+                None
+                if g.edge_support_weight is None
+                else torch.from_numpy(g.edge_support_weight)
+            )
 
             R, shared_logits, species_logits = model.resistance_matrix(
-                s, edge_index, edge_feat, g.num_nodes
+                s, edge_index, edge_feat, g.num_nodes, edge_support_weight=edge_support_weight
             )
             pred = model.alpha[s] + model.beta[s] * R[g.pair_i, g.pair_j]
 

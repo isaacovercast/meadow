@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+import contextily as ctx
 import numpy as np
 import matplotlib.colors as clr
 import math
@@ -137,6 +138,7 @@ def plot_species_resistance(
     edge_index: np.ndarray,
     edge_values: np.ndarray | None = None,
     ax=None,
+    alpha=1,
     cmap=edge_cmap,
     basemap=True,
     basemap_crs: str = "EPSG:3857",
@@ -150,6 +152,8 @@ def plot_species_resistance(
     show_sites: bool = False,
     sample_coords: np.ndarray | None = None,
     value_label: str = "Edge resistance",
+    figsize: tuple = (6, 5),
+    outfile: str | None = None,
 ):
     """Plot one species graph with edges colored by resistance values.
 
@@ -163,6 +167,8 @@ def plot_species_resistance(
         Edge values to color. If omitted, values are computed from `model`.
     ax : matplotlib.axes.Axes | None, optional
         Existing axis; a new one is created when omitted.
+    alpha : float
+        Set the alpha level for drawing edges
     cmap : Any, optional
         Colormap used for edge coloring.
     basemap : Any, optional
@@ -201,7 +207,7 @@ def plot_species_resistance(
     from shapely.geometry import LineString
 
     if ax is None:
-        _, ax = plt.subplots(figsize=(6, 5))
+        fig, ax = plt.subplots(figsize=figsize)
 
     if coord_order not in {"latlon", "lonlat"}:
         raise ValueError("coord_order must be 'latlon' or 'lonlat'")
@@ -238,7 +244,7 @@ def plot_species_resistance(
     for i, j in edge_index:
         segments.append([(x[i], y[i]), (x[j], y[j])])
 
-    lc = LineCollection(segments, cmap=cmap)
+    lc = LineCollection(segments, cmap=cmap, alpha=alpha)
     lc.set_array(edge_values)
     lc.set_linewidth(2.0)
     ax.add_collection(lc)
@@ -281,7 +287,6 @@ def plot_species_resistance(
         ax.scatter(x_s, y_s, s=10, c="black", alpha=0.75, zorder=3)
 
     if basemap is not None and basemap is not False:
-        import contextily as ctx
 
         if basemap is True:
             basemap_source = ctx.providers.CartoDB.Positron
@@ -299,6 +304,9 @@ def plot_species_resistance(
         crs=crs,
     )
 
+    if outfile:
+        plt.savefig(outfile)
+
     folium_map = None
     if explore:
         folium_map = _explore_safe(gdf, edge_values, cmap, explore_kwargs)
@@ -312,6 +320,7 @@ def plot_multi_edge_resistance(
     graphs,
     model,
     cmap=edge_cmap,
+    alpha=1,
     basemap=True,
     basemap_crs: str = "EPSG:3857",
     coord_order: str = "latlon",
@@ -325,6 +334,8 @@ def plot_multi_edge_resistance(
     sample_coords_list: list[np.ndarray] | None = None,
     ncols: int = 2,
     figsize: tuple[int, int] = (6, 5),
+    outfile: str | None = None,
+    outdir: str | None = None,
 ):
     """Plot resistance edges for multiple species as facets or an overlay summary.
 
@@ -338,6 +349,8 @@ def plot_multi_edge_resistance(
         Trained model used to predict edge resistance.
     cmap : Any, optional
         Colormap used for edge coloring.
+    alpha : float
+        Set the alpha (transparenc) for drawing edges
     basemap : Any, optional
         `True`/provider object for background basemap, or `False`/`None` to disable.
     basemap_crs : str, optional
@@ -537,6 +550,7 @@ def plot_multi_edge_resistance(
             g.edge_index,
             edge_values,
             ax=ax_i,
+            alpha=alpha,
             cmap=cmap,
             basemap=basemap,
             basemap_crs=basemap_crs,
@@ -556,6 +570,15 @@ def plot_multi_edge_resistance(
     for ax_extra in axes_arr[num:]:
         ax_extra.remove()
 
+    if outfile:
+        plt.savefig(outfile)
+
+    if outdir:
+        for i, ax in enumerate(axes_arr):
+            bbox = ax.get_tightbbox(fig.canvas.get_renderer())
+            bbox = bbox.transformed(fig.dpi_scale_trans.inverted())
+            fig.savefig(f"{outdir}/axis_{i}.png", bbox_inches=bbox)
+
     if explore:
         return axes_arr[:num], gdfs, maps
     return axes_arr[:num], gdfs
@@ -565,6 +588,7 @@ def plot_shared_resistance(
     species_list,
     graphs,
     model,
+    alpha: float = 1,
     graph_index: int = 0,
     cmap=edge_cmap,
     basemap=True,
@@ -582,6 +606,8 @@ def plot_shared_resistance(
     rbf_kwargs: dict | None = None,
     kriging_kwargs: dict | None = None,
     show_sites: bool = False,
+    figsize: tuple = (6,5),
+    outfile: str | None = None,
 ):
     """Plot the shared cross-species resistance component as edges or a surface.
 
@@ -593,6 +619,8 @@ def plot_shared_resistance(
         Graph objects with edge features and geometry.
     model : Any
         Trained model with shared edge network.
+    alpha : float
+        Set transparency for edge plotting
     graph_index : int, optional
         Which graph/species entry to visualize.
     cmap : Any, optional
@@ -662,6 +690,9 @@ def plot_shared_resistance(
             explore_kwargs=explore_kwargs,
             show_sites=show_sites,
             sample_coords=sp.sample_coords if show_sites else None,
+            alpha=alpha,
+            figsize=figsize,
+            outfile=outfile,
         )
 
     import matplotlib.pyplot as plt
@@ -755,7 +786,7 @@ def plot_shared_resistance(
         ).reshape(grid_x.shape)
         grid_z = np.where(mask, grid_z, np.nan)
 
-    fig, ax = plt.subplots(figsize=(6, 5))
+    fig, ax = plt.subplots(figsize=figsize)
     extent = (xmin, xmax, ymin, ymax)
     ax.set_xlim(xmin, xmax)
     ax.set_ylim(ymin, ymax)

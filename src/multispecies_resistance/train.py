@@ -129,8 +129,8 @@ def build_species_graphs(
     mesh_spacing_deg: float | None = None,
     mesh_grid_type: str = "triangular",
     mesh_env: np.ndarray | None = None,
-    buffer_km: float = 0.0,
-    bbox: str | None = "square",
+    buffer_km: float | None = None,
+    bbox: str | None = "convex_hull",
     bbox_file: str | None = None,
     input_graph: str | None = None,
     raster_paths: Iterable[str | Path] | None = None,
@@ -141,7 +141,7 @@ def build_species_graphs(
     raster_coord_order: str = "latlon",
     raster_coords_crs: str = "EPSG:4326",
     use_geodesic: bool = False,
-    support_decay_km: float | None = None,
+    support_decay_km: float | None = 150,
     support_floor: float = 0.01,
 ) -> tuple[List[SpeciesGraph], dict | None]:
     """Convert sample-level species inputs into graph-based training datasets.
@@ -286,6 +286,11 @@ def build_species_graphs(
                     coord_order=coord_order,
                     coords_crs=coords_crs,
                 )
+                print(f"Mesh spacing (km) = {mesh_spacing_km}")
+
+            if buffer_km is None:
+                # Set buffer to 4x mesh spacing by default as a rough guide
+                buffer_km = mesh_spacing_km * 4
 
             graph_fn = build_geodesic_mesh_graph if use_geodesic else build_dense_mesh_graph
             coords_list = [sp.sample_coords for sp in species_list]
@@ -478,7 +483,7 @@ def train_model(
     species_graphs: List[SpeciesGraph],
     hidden_dim: int = 32,
     lr: float = 1e-2,
-    epochs: int = 200,
+    epochs: int = 500,
     l2_shared: float = 1e-4,
     l2_species: float = 1e-4,
     edge_smoothing: float = 0.0,

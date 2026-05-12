@@ -13,7 +13,7 @@ from .graph import (
     project_coords,
     standardize_features,
 )
-from .io import list_pedic_species, load_pedic_species
+from .io import list_species, load_species
 from .raster import (
     RasterStack,
     open_raster_stack,
@@ -29,3 +29,5 @@ from .viz import (
     plot_sites,
     plot_species_resistance,
 )
+
+from .vcf_to_hdf5 import VCFtoHDF5

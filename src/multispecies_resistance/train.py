@@ -11,7 +11,7 @@ from multispecies_resistance.graph import (
     SpeciesGraph,
     apply_coastline_mask,
     build_edge_neighbor_pairs,
-    build_dense_mesh_graph,
+    build_dggrid_mesh_graph,
     build_geodesic_mesh_graph,
     classify_land_points,
     compute_edge_support_weight,
@@ -142,15 +142,15 @@ def build_species_graphs(
     raster_fill_method: str = "nan",
     raster_coord_order: str = "latlon",
     raster_coords_crs: str = "EPSG:4326",
-    use_geodesic: bool = False,
-    mask_coastline: str | None = "terrestrial",
+    mesh_builder: str = "dggrid",
+    mask_coastline: str | None = None,
     support_decay_km: float | None = 150,
     support_floor: float = 0.01,
 ) -> tuple[List[SpeciesGraph], dict | None]:
     """Convert sample-level species inputs into graph-based training datasets.
 
     When `input_graph` is provided, samples are assigned to the nearest `.gml`
-    graph node. Otherwise a shared dense mesh is built from species sample
+    graph node. Otherwise a shared mesh is built from species sample
     coordinates and samples are assigned to the nearest mesh node. If
     `mesh_spacing_km` is `None`, a spacing is chosen automatically from
     nearest-neighbor sample distances.
@@ -162,6 +162,9 @@ def build_species_graphs(
     """
     if not species_list:
         raise ValueError("species_list is empty")
+    mesh_builder = str(mesh_builder).lower()
+    if mesh_builder not in {"geodesic", "dggrid"}:
+        raise ValueError("mesh_builder must be 'geodesic' or 'dggrid'")
     if mask_coastline not in {"terrestrial", "marine", None}:
         raise ValueError("mask_coastline must be either 'terrestrial' or 'marine'")
     if support_decay_km is not None and support_decay_km <= 0.0:
@@ -322,10 +325,13 @@ def build_species_graphs(
                 # Set buffer to 4x mesh spacing by default as a rough guide
                 buffer_km = mesh_spacing_km * 4
 
-            graph_fn = build_geodesic_mesh_graph if use_geodesic else build_dense_mesh_graph
+            if mesh_builder == "geodesic":
+                graph_fn = build_geodesic_mesh_graph
+            else:
+                graph_fn = build_dggrid_mesh_graph
             coords_list = [sp.sample_coords for sp in species_list]
-            mesh_coords, edge_index = graph_fn(
-                coords_list,
+            graph_kwargs = dict(
+                coords_list=coords_list,
                 spacing_km=mesh_spacing_km,
                 spacing_deg=mesh_spacing_deg,
                 grid_type=mesh_grid_type,
@@ -336,6 +342,7 @@ def build_species_graphs(
                 bbox=bbox,
                 bbox_file=bbox_file,
             )
+            mesh_coords, edge_index = graph_fn(**graph_kwargs)
             if mask_coastline != None:
                 mesh_coords, edge_index = apply_coastline_mask(
                     mesh_coords,

@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+import json
 from pathlib import Path
+import shutil
+import subprocess
+import tempfile
 from typing import Tuple
 
 import numpy as np
@@ -624,6 +628,170 @@ def _spacing_km_from_deg(spacing_deg: float, mean_lat: float) -> float:
     return float(0.5 * (lat_km + lon_km))
 
 
+def _dggrid_resolution_for_spacing(spacing_km: float) -> int:
+    """Map a target spacing to a DGGRID triangle resolution level."""
+    if spacing_km <= 0.0:
+        raise ValueError("spacing_km must be > 0.")
+    base_spacing_km = 4000.0
+    resolution = int(np.round(np.log(base_spacing_km / spacing_km) / np.log(2.0)))
+    return max(0, resolution)
+
+
+def _write_geojson_region(geometry, geometry_crs: CRS, out_path: Path) -> None:
+    """Write one clipping geometry to a GeoJSON file in EPSG:4326."""
+    import geopandas as gpd
+    from shapely.geometry import mapping
+
+    region_wgs84 = gpd.GeoSeries([geometry], crs=geometry_crs).to_crs("EPSG:4326").iloc[0]
+    payload = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {},
+                "geometry": mapping(region_wgs84),
+            }
+        ],
+    }
+    out_path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _write_dggrid_metafile(
+    meta_path: Path,
+    region_path: Path,
+    output_prefix: Path,
+    resolution: int,
+) -> None:
+    """Write a simple DGGRID metafile for a triangular clipped grid."""
+    lines = [
+        "dggrid_operation GENERATE_GRID",
+        "dggs_type ISEA4T",
+        f"dggs_res_spec {int(resolution)}",
+        "clip_subset_type GDAL",
+        f"clip_region_files {region_path}",
+        "cell_output_type GDAL",
+        "cell_output_gdal_format GeoJSON",
+        f"cell_output_file_name {output_prefix}",
+    ]
+    meta_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _run_dggrid_metafile(metafile_path: Path, workdir: Path) -> None:
+    """Invoke an external DGGRID-style command against a metafile."""
+    executable = "dggrid"
+    exe = shutil.which(executable) or executable
+    attempts = [
+        [exe, str(metafile_path)],
+        [exe, "--metafile", str(metafile_path)],
+        [exe, "-m", str(metafile_path)],
+    ]
+    errors: list[str] = []
+    for cmd in attempts:
+        try:
+            subprocess.run(
+                cmd,
+                cwd=str(workdir),
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            return
+        except FileNotFoundError:
+            errors.append(f"{cmd[0]}: executable not found")
+            break
+        except subprocess.CalledProcessError as exc:
+            stderr = exc.stderr.strip() if exc.stderr else ""
+            stdout = exc.stdout.strip() if exc.stdout else ""
+            msg = f"{' '.join(cmd)} failed with code {exc.returncode}"
+            if stderr:
+                msg += f"; stderr: {stderr}"
+            elif stdout:
+                msg += f"; stdout: {stdout}"
+            errors.append(msg)
+    raise RuntimeError(
+        "DGGRID mesh generation failed. Attempted commands:\n- "
+        + "\n- ".join(errors)
+    )
+
+
+def _find_dggrid_output(output_prefix: Path) -> Path | None:
+    """Locate the vector output created by DGGRID for a requested output prefix."""
+    candidates = []
+
+    if output_prefix.exists():
+        candidates.append(output_prefix)
+
+    parent = output_prefix.parent
+    stem = output_prefix.name
+    for path in sorted(parent.glob(f"{stem}*")):
+        if path == output_prefix:
+            continue
+        if path.suffix.lower() in {".geojson", ".json", ".gpkg", ".shp"}:
+            candidates.append(path)
+
+    if candidates:
+        return candidates[0]
+    return None
+
+
+def _graph_from_cell_polygons(cells_gdf) -> tuple[np.ndarray, np.ndarray]:
+    """Convert triangular cell polygons into a vertex-edge graph of triangle sides."""
+    if cells_gdf.empty:
+        raise ValueError("DGGRID output contained no cells.")
+
+    if cells_gdf.crs is None:
+        cells_gdf = cells_gdf.set_crs("EPSG:4326")
+    else:
+        cells_gdf = cells_gdf.to_crs("EPSG:4326")
+
+    geoms = cells_gdf.geometry.to_list()
+    vertex_to_index: dict[tuple[float, float], int] = {}
+    node_coords: list[list[float]] = []
+    edges: set[tuple[int, int]] = set()
+    round_digits = 10
+
+    for geom in geoms:
+        if geom is None or geom.is_empty:
+            continue
+        if geom.geom_type != "Polygon":
+            raise ValueError(
+                f"Expected DGGRID polygon cells, found geometry type '{geom.geom_type}'."
+            )
+
+        coords = list(geom.exterior.coords)
+        if len(coords) < 4:
+            continue
+        coords = coords[:-1]
+        if len(coords) < 3:
+            continue
+
+        vertex_ids: list[int] = []
+        for lon, lat in coords:
+            key = (round(float(lon), round_digits), round(float(lat), round_digits))
+            idx = vertex_to_index.get(key)
+            if idx is None:
+                idx = len(node_coords)
+                vertex_to_index[key] = idx
+                node_coords.append([float(lat), float(lon)])
+            vertex_ids.append(idx)
+
+        for i, u in enumerate(vertex_ids):
+            v = vertex_ids[(i + 1) % len(vertex_ids)]
+            if u == v:
+                continue
+            a, b = (u, v) if u < v else (v, u)
+            edges.add((a, b))
+
+    if not node_coords:
+        raise ValueError("DGGRID output produced no usable polygon vertices.")
+    if not edges:
+        raise ValueError("DGGRID output produced no triangle-side edges.")
+
+    mesh_coords = np.asarray(node_coords, dtype=np.float64)
+    edge_index = np.asarray(sorted(edges), dtype=np.int64)
+    return mesh_coords, edge_index
+
+
 def _resolve_bbox_spec(
     bbox: str | None,
     bbox_file: str | None,
@@ -798,123 +966,6 @@ def _largest_connected_component(
     return component_coords.astype(np.float64, copy=False), component_edges.astype(np.int64, copy=False)
 
 
-def grid_nodes_from_bbox(
-    sample_coords: np.ndarray,
-    spacing_km: float | None = None,
-    spacing_deg: float | None = None,
-    grid_type: str = "triangular",
-) -> np.ndarray:
-    """Generate regularly spaced grid nodes covering a coordinate bounding box.
-
-    Parameters
-    ----------
-    sample_coords : np.ndarray
-        `N x 2` sample coordinates in `lat, lon`.
-    spacing_km : float | None, optional
-        Approximate spacing in kilometers.
-    spacing_deg : float | None, optional
-        Spacing in degrees. Provide exactly one of `spacing_km` or `spacing_deg`.
-    grid_type : str, optional
-        `"triangular"` for staggered rows or `"rect"` for a regular lattice.
-
-    Returns
-    -------
-    np.ndarray
-        `G x 2` grid node coordinates in `lat, lon`.
-    """
-    if spacing_km is None and spacing_deg is None:
-        raise ValueError("Provide spacing_km or spacing_deg.")
-    if spacing_km is not None and spacing_deg is not None:
-        raise ValueError("Provide only one of spacing_km or spacing_deg.")
-
-    if spacing_deg is None:
-        mean_lat = float(np.mean(sample_coords[:, 0]))
-        deg_lat = spacing_km / 111.0
-        deg_lon = spacing_km / (111.0 * np.cos(np.radians(mean_lat)))
-    else:
-        deg_lat = spacing_deg
-        deg_lon = spacing_deg
-
-    lat_min, lon_min = np.min(sample_coords, axis=0)
-    lat_max, lon_max = np.max(sample_coords, axis=0)
-
-    grid_type = grid_type.lower()
-    if grid_type == "triangular":
-        dx = deg_lon
-        dy = deg_lat * (np.sqrt(3.0) / 2.0)
-
-        lat_grid = np.arange(lat_min, lat_max + dy, dy)
-        rows = []
-        for r, lat in enumerate(lat_grid):
-            offset = 0.5 * dx if (r % 2 == 1) else 0.0
-            lon_start = lon_min + offset
-            lon_vals = np.arange(lon_start, lon_max + dx, dx)
-            if lon_start > lon_min:
-                lon_vals = np.concatenate(([lon_start - dx], lon_vals))
-            lon_vals = lon_vals[(lon_vals >= lon_min - 1e-9) & (lon_vals <= lon_max + 1e-9)]
-            if lon_vals.size == 0:
-                continue
-            rows.append(np.column_stack([np.full_like(lon_vals, lat), lon_vals]))
-
-        nodes = np.vstack(rows) if rows else np.empty((0, 2), dtype=np.float64)
-    elif grid_type == "rect":
-        lat_grid = np.arange(lat_min, lat_max + deg_lat, deg_lat)
-        lon_grid = np.arange(lon_min, lon_max + deg_lon, deg_lon)
-        grid_lat, grid_lon = np.meshgrid(lat_grid, lon_grid, indexing="ij")
-        nodes = np.column_stack([grid_lat.ravel(), grid_lon.ravel()])
-    else:
-        raise ValueError("grid_type must be 'triangular' or 'rect'")
-
-    return nodes
-
-
-def build_delaunay_graph(
-    site_coords: np.ndarray,
-    project_to: str | CRS | None = None,
-    coord_order: str = "latlon",
-    coords_crs: str | CRS | None = "EPSG:4326",
-) -> np.ndarray:
-    """Build an undirected graph from Delaunay triangulation edges.
-
-    Parameters
-    ----------
-    site_coords : np.ndarray
-        `S x 2` site coordinates.
-    project_to : str | CRS | None, optional
-        Optional projection CRS used before triangulation.
-    coord_order : str, optional
-        Coordinate order of `site_coords`.
-    coords_crs : str | CRS | None, optional
-        CRS of `site_coords`.
-
-    Returns
-    -------
-    np.ndarray
-        `E x 2` undirected edge list with sorted node indices.
-    """
-    from scipy.spatial import Delaunay
-
-    coords = site_coords
-    if project_to is not None:
-        coords = project_coords(
-            site_coords, coord_order=coord_order, coords_crs=coords_crs, target_crs=project_to
-        )
-
-    tri = Delaunay(coords)
-    edges = set()
-    for simplex in tri.simplices:
-        for a, b in ((0, 1), (1, 2), (0, 2)):
-            i = int(simplex[a])
-            j = int(simplex[b])
-            if i == j:
-                continue
-            u, v = (i, j) if i < j else (j, i)
-            edges.add((u, v))
-
-    edge_index = np.array(sorted(edges), dtype=np.int64)
-    return edge_index
-
-
 def build_edge_neighbor_pairs(
     edge_index: np.ndarray,
     num_nodes: int,
@@ -1036,33 +1087,6 @@ def compute_edge_support_weight(
     return edge_support.astype(np.float64, copy=False)
 
 
-def _filter_long_mesh_edges(
-    mesh_coords: np.ndarray,
-    edge_index: np.ndarray,
-    max_ratio: float = 1.25,
-) -> np.ndarray:
-    """Drop Delaunay edges that are much longer than the nominal mesh step.
-
-    The nominal step is estimated from the shortest positive edge length in the
-    candidate graph, which corresponds to the local mesh spacing for the regular
-    grids used here.
-    """
-    if edge_index.size == 0:
-        return edge_index
-
-    edge_lengths = haversine_km(
-        mesh_coords[edge_index[:, 0]],
-        mesh_coords[edge_index[:, 1]],
-    )
-    positive = edge_lengths[edge_lengths > 0.0]
-    if positive.size == 0:
-        return edge_index
-
-    nominal_step = float(np.min(positive))
-    keep = edge_lengths <= (nominal_step * max_ratio)
-    return edge_index[keep]
-
-
 def build_geodesic_mesh_graph(
     coords_list: list[np.ndarray],
     spacing_km: float | None = 50.0,
@@ -1148,7 +1172,7 @@ def build_geodesic_mesh_graph(
     return mesh_coords, edge_index
 
 
-def build_dense_mesh_graph(
+def build_dggrid_mesh_graph(
     coords_list: list[np.ndarray],
     spacing_km: float | None = 50.0,
     spacing_deg: float | None = None,
@@ -1160,26 +1184,26 @@ def build_dense_mesh_graph(
     bbox: str | None = "square",
     bbox_file: str | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Create a shared mesh of nodes and edges covering all species locations.
+    """Create a shared triangular mesh using an external DGGRID-style command.
 
     Parameters
     ----------
     coords_list : list[np.ndarray]
         Per-species coordinate arrays (`S_i x 2`).
     spacing_km : float | None, optional
-        Mesh node spacing in kilometers.
+        Target edge spacing in kilometers.
     spacing_deg : float | None, optional
-        Mesh node spacing in degrees.
+        Approximate spacing in degrees. Used only when `spacing_km` is omitted.
     grid_type : str, optional
-        Node layout type, `"triangular"` or `"rect"`.
+        Accepted for compatibility; only `"triangular"` is supported.
     project_to : str | CRS | None, optional
-        Optional projection CRS used for graph construction.
+        Optional projected CRS used for region clipping.
     coord_order : str, optional
         Coordinate order of arrays in `coords_list`.
     coords_crs : str | CRS | None, optional
         CRS of coordinates in `coords_list`.
     buffer_km : float, optional
-        Bounding-area expansion before mesh generation.
+        Buffer applied to the clipping geometry.
     bbox : str | None, optional
         Bounding shape: `"square"`, `"convex_hull"`, `"polygon"`, or `None`.
     bbox_file : str | None, optional
@@ -1188,113 +1212,77 @@ def build_dense_mesh_graph(
     Returns
     -------
     tuple[np.ndarray, np.ndarray]
-        `mesh_coords` (`M x 2`) and `edge_index` (`E x 2`).
+        `mesh_coords` (`M x 2`) and `edge_index` (`E x 2`) from DGGRID cell topology.
     """
     if not coords_list:
         raise ValueError("coords_list is empty")
+    if spacing_km is not None and spacing_deg is not None:
+        raise ValueError("Provide only one of spacing_km or spacing_deg.")
+
+    grid_type = grid_type.lower()
+    if grid_type != "triangular":
+        raise ValueError("build_dggrid_mesh_graph only supports grid_type='triangular'.")
+
     all_coords = np.vstack(coords_list)
-
-    # Convert to lat/lon for bbox logic
-    if coord_order == "lonlat":
-        all_coords_latlon = all_coords[:, [1, 0]]
-    else:
-        all_coords_latlon = all_coords
-
-    if buffer_km < 0:
-        raise ValueError("buffer_km must be >= 0")
-
-    mean_lat = float(np.mean(all_coords_latlon[:, 0]))
-    dlat = buffer_km / 111.0
-    dlon = buffer_km / (111.0 * np.cos(np.radians(mean_lat)))
-
-    lat_min, lon_min = np.min(all_coords_latlon, axis=0)
-    lat_max, lon_max = np.max(all_coords_latlon, axis=0)
-    lat_min -= dlat
-    lat_max += dlat
-    lon_min -= dlon
-    lon_max += dlon
-
-    coords_for_grid = np.vstack(
-        [all_coords_latlon, np.array([[lat_min, lon_min], [lat_max, lon_max]])]
-    )
-
-    mesh_coords = grid_nodes_from_bbox(
-        coords_for_grid,
-        spacing_km=spacing_km,
-        spacing_deg=spacing_deg,
-        grid_type=grid_type,
-    )
-
-    if bbox is not None and not isinstance(bbox, str):
-        bbox = str(bbox)
-
-    if bbox_file is None and bbox not in {None, "square", "convex_hull", "polygon"}:
-        try:
-            from pathlib import Path
-
-            if Path(str(bbox)).exists():
-                bbox_file = str(bbox)
-                bbox = "polygon"
-        except Exception:
-            pass
-
-    if bbox_file is not None:
-        bbox = "polygon"
-
-    if bbox is None:
-        bbox = "square"
-
-    bbox = bbox.lower()
-    if bbox not in {"square", "convex_hull", "polygon"}:
-        raise ValueError("bbox must be 'square', 'convex_hull', or 'polygon'")
-
-    if bbox in {"convex_hull", "polygon"}:
-        import geopandas as gpd
-        from shapely.geometry import Point
-
-        if bbox == "polygon":
-            if bbox_file is None:
-                raise ValueError("bbox_file is required when bbox='polygon'")
-            poly_coords = np.loadtxt(bbox_file)
-            if poly_coords.ndim != 2 or poly_coords.shape[1] != 2:
-                raise ValueError("bbox_file must contain two columns (lat lon)")
-            if not np.allclose(poly_coords[0], poly_coords[-1]):
-                raise ValueError("bbox_file polygon must be closed (first and last point identical)")
-            from shapely.geometry import Polygon
-
-            polygon = Polygon([(lon, lat) for lat, lon in poly_coords])
-            gseries = gpd.GeoSeries([polygon], crs=coords_crs)
-        else:
-            gseries = gpd.GeoSeries(
-                [Point(lon, lat) for lat, lon in all_coords_latlon], crs=coords_crs
-            )
-
-        proj_crs = CRS.from_user_input("EPSG:3857")
-        gseries_proj = gseries.to_crs(proj_crs)
-        if bbox == "polygon":
-            hull = gseries_proj.unary_union
-        else:
-            hull = gseries_proj.unary_union.convex_hull
-        if buffer_km > 0:
-            hull = hull.buffer(buffer_km * 1000.0)
-
-        mesh_series = gpd.GeoSeries(
-            [Point(lon, lat) for lat, lon in mesh_coords], crs=coords_crs
-        ).to_crs(proj_crs)
-        mask = mesh_series.within(hull) | mesh_series.touches(hull)
-        mesh_coords = mesh_coords[np.array(mask)]
-
-    if mesh_coords.size == 0:
-        raise ValueError("Mesh generation produced zero nodes. Check bbox/buffer/grid spacing.")
-
-    edge_index = build_delaunay_graph(
-        mesh_coords,
-        project_to=project_to,
+    all_coords_latlon = _coords_to_latlon(
+        all_coords,
         coord_order=coord_order,
         coords_crs=coords_crs,
     )
-    edge_index = _filter_long_mesh_edges(mesh_coords, edge_index)
+    mean_lat = float(np.mean(all_coords_latlon[:, 0]))
 
+    if spacing_km is None:
+        if spacing_deg is None:
+            raise ValueError("Provide spacing_km or spacing_deg.")
+        spacing_km = _spacing_km_from_deg(spacing_deg, mean_lat=mean_lat)
+    elif spacing_km <= 0.0:
+        raise ValueError("spacing_km must be > 0.")
+
+    resolution = _dggrid_resolution_for_spacing(float(spacing_km))
+    region, region_crs = _study_region_geometry(
+        all_coords_latlon,
+        buffer_km=buffer_km,
+        bbox=bbox,
+        bbox_file=bbox_file,
+        project_to=project_to,
+    )
+
+    try:
+        import geopandas as gpd
+    except ImportError as exc:
+        raise ImportError(
+            "geopandas is required for DGGRID mesh import. "
+            "Install it in the project environment before using mesh_builder='dggrid'."
+        ) from exc
+
+    with tempfile.TemporaryDirectory(prefix="dggrid_mesh_") as tmpdir:
+        tmp = Path(tmpdir)
+        region_path = tmp / "region.geojson"
+        meta_path = tmp / "dggrid.meta"
+        output_prefix = tmp / "cells"
+
+        _write_geojson_region(region, region_crs, region_path)
+        _write_dggrid_metafile(meta_path, region_path, output_prefix, resolution)
+        _run_dggrid_metafile(meta_path, tmp)
+
+        output_path = _find_dggrid_output(output_prefix)
+        if output_path is None:
+            tmp_contents = ", ".join(sorted(p.name for p in tmp.iterdir()))
+            raise RuntimeError(
+                "DGGRID completed but no readable vector output was found for prefix "
+                f"'{output_prefix.name}'. Temp directory contents: {tmp_contents}"
+            )
+
+        cells = gpd.read_file(output_path)
+
+    mesh_coords, edge_index = _graph_from_cell_polygons(cells)
+    mesh_coords, edge_index = _clip_graph_to_region(mesh_coords, edge_index, region, region_crs)
+    if mesh_coords.size == 0:
+        raise ValueError(
+            "DGGRID mesh generation produced zero nodes. Check bbox/buffer/grid spacing."
+        )
+
+    mesh_coords, edge_index = _largest_connected_component(mesh_coords, edge_index)
     return mesh_coords, edge_index
 
 

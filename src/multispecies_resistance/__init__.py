@@ -6,8 +6,7 @@ from .data import SpeciesData, aggregate_site_genotypes, pairwise_site_distance
 from .graph import (
     SpeciesGraph,
     apply_coastline_mask,
-    build_delaunay_graph,
-    build_dense_mesh_graph,
+    build_dggrid_mesh_graph,
     build_geodesic_mesh_graph,
     classify_land_points,
     compute_edge_support_weight,

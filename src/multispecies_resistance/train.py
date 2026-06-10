@@ -9,9 +9,11 @@ import torch
 from multispecies_resistance.data import SpeciesData, aggregate_site_genotypes, pairwise_site_distance
 from multispecies_resistance.graph import (
     SpeciesGraph,
+    apply_coastline_mask,
     build_edge_neighbor_pairs,
     build_dense_mesh_graph,
     build_geodesic_mesh_graph,
+    classify_land_points,
     compute_edge_support_weight,
     edge_features,
     project_coords,
@@ -141,6 +143,7 @@ def build_species_graphs(
     raster_coord_order: str = "latlon",
     raster_coords_crs: str = "EPSG:4326",
     use_geodesic: bool = False,
+    mask_coastline: str | None = "terrestrial",
     support_decay_km: float | None = 150,
     support_floor: float = 0.01,
 ) -> tuple[List[SpeciesGraph], dict | None]:
@@ -152,16 +155,35 @@ def build_species_graphs(
     `mesh_spacing_km` is `None`, a spacing is chosen automatically from
     nearest-neighbor sample distances.
     Environmental covariates are sampled at graph nodes when raster inputs are
-    provided. Optional support attenuation weights can also be precomputed from
-    graph distance to occupied nodes; setting `support_decay_km=None` disables
-    this behavior.
+    provided. Graph nodes can optionally be masked to land or marine locations
+    before sample assignment. Optional support attenuation weights can also be
+    precomputed from graph distance to occupied nodes; setting
+    `support_decay_km=None` disables this behavior.
     """
     if not species_list:
         raise ValueError("species_list is empty")
+    if mask_coastline not in {"terrestrial", "marine", None}:
+        raise ValueError("mask_coastline must be either 'terrestrial' or 'marine'")
     if support_decay_km is not None and support_decay_km <= 0.0:
         raise ValueError("support_decay_km must be > 0 when provided.")
     if not (0.0 <= support_floor <= 1.0):
         raise ValueError("support_floor must lie in [0, 1].")
+
+    if not mask_coastline == None:
+        for sp in species_list:
+            sample_is_land = classify_land_points(
+                sp.sample_coords,
+                coord_order=coord_order,
+                coords_crs=coords_crs,
+            )
+            keep = sample_is_land if mask_coastline == "terrestrial" else ~sample_is_land
+            num_bad = int(np.count_nonzero(~keep))
+            if num_bad > 0:
+                print(
+                    f"Species '{sp.name}' has {num_bad} sample(s) outside the "
+                    f"'{mask_coastline}' coastline mask. Check coords:\n"
+                    f"  {sp.sample_coords[~keep]}"
+                )
 
     graphs: List[SpeciesGraph] = []
     all_feats = []
@@ -213,6 +235,14 @@ def build_species_graphs(
             for u, v in gml.edges():
                 edge_index.append((node_index[u], node_index[v]))
             edge_index = np.asarray(edge_index, dtype=np.int64)
+            if mask_coastline != None:
+                node_coords, edge_index = apply_coastline_mask(
+                    node_coords,
+                    edge_index,
+                    mask_coastline=mask_coastline,
+                    coord_order="latlon",
+                    coords_crs="EPSG:4326",
+                )
 
             if raster_stack is not None and mesh_env is not None:
                 raise ValueError("Provide either raster inputs or mesh_env, not both.")
@@ -306,6 +336,14 @@ def build_species_graphs(
                 bbox=bbox,
                 bbox_file=bbox_file,
             )
+            if mask_coastline != None:
+                mesh_coords, edge_index = apply_coastline_mask(
+                    mesh_coords,
+                    edge_index,
+                    mask_coastline=mask_coastline,
+                    coord_order="latlon",
+                    coords_crs="EPSG:4326",
+                )
 
             if raster_stack is not None and mesh_env is not None:
                 raise ValueError("Provide either raster inputs or mesh_env, not both.")

@@ -246,7 +246,7 @@ def plot_species_resistance(
 
     lc = LineCollection(segments, cmap=cmap, alpha=alpha)
     lc.set_array(edge_values)
-    lc.set_linewidth(2.0)
+    lc.set_linewidth(1.0)
     ax.add_collection(lc)
     ax.autoscale()
     ax.set_xlabel("Longitude" if basemap is None or basemap is False else "X")
@@ -545,7 +545,7 @@ def plot_multi_edge_resistance(
         coords_plot = (
             sample_coords_list[idx] if sample_coords_list is not None else sp.sample_coords
         )
-        ax_i, gdf_i, fmap_i = plot_species_resistance(
+        res = plot_species_resistance(
             g.node_coords,
             g.edge_index,
             edge_values,
@@ -562,6 +562,10 @@ def plot_multi_edge_resistance(
             sample_coords=coords_plot if show_sites else None,
             value_label=colorbar_label,
         )
+        if explore:
+            ax_i, gdf_i, fmap_i = res
+        else:
+            ax_i, gdf_i = res
         ax_i.set_title(sp.name)
         gdfs.append(gdf_i)
         if explore:

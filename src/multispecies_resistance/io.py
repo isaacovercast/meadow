@@ -123,8 +123,6 @@ def load_species(
                 idx_map = {name: i for i, name in enumerate(sample_names)}
                 # Get genos row indices in target order
                 hnames = io5["snps"].attrs["names"]
-                print(sample_names)
-                print(hnames)
                 reorder_idx = [idx_map[name] for name in hnames]
                 # Reorder genos array
                 genos = genos[reorder_idx]

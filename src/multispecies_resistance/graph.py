@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 from typing import Tuple
 
 import numpy as np
@@ -382,6 +383,142 @@ def _coords_to_latlon(
     dst_crs = CRS.from_user_input("EPSG:4326")
     lon_out, lat_out = transform(src_crs, dst_crs, lons.tolist(), lats.tolist())
     return np.column_stack([lat_out, lon_out]).astype(np.float64)
+
+
+@lru_cache(maxsize=1)
+def _load_global_land_geometry():
+    """Load a global land polygon geometry for coastline masking."""
+    try:
+        import geopandas as gpd
+    except ImportError as exc:
+        raise ImportError(
+            "geopandas is required for coastline masking. "
+            "Install it in the project environment before using mask_coastline."
+        ) from exc
+
+    try:
+        import geodatasets
+    except ImportError as exc:
+        raise ImportError(
+            "geodatasets is required for coastline masking. "
+            "Install it in the project environment before using mask_coastline."
+        ) from exc
+
+    dataset_path = geodatasets.get_path("naturalearth.land")
+
+    land = gpd.read_file(dataset_path)
+    if land.crs is None:
+        land = land.set_crs("EPSG:4326")
+    else:
+        land = land.to_crs("EPSG:4326")
+
+    geometry = land.geometry
+    union_all = getattr(geometry, "union_all", None)
+    if callable(union_all):
+        return union_all()
+    return geometry.unary_union
+
+
+def classify_land_points(
+    coords: np.ndarray,
+    coord_order: str = "latlon",
+    coords_crs: str | CRS | None = "EPSG:4326",
+) -> np.ndarray:
+    """Classify coordinates as terrestrial or non-terrestrial.
+
+    Parameters
+    ----------
+    coords : np.ndarray
+        `N x 2` coordinate array.
+    coord_order : str, optional
+        Input order, `"latlon"` or `"lonlat"`.
+    coords_crs : str | CRS | None, optional
+        CRS of input coordinates.
+
+    Returns
+    -------
+    np.ndarray
+        Boolean array of length `N`, where `True` indicates a point on land.
+    """
+    try:
+        import geopandas as gpd
+    except ImportError as exc:
+        raise ImportError(
+            "geopandas is required for coastline masking. "
+            "Install it in the project environment before using classify_land_points."
+        ) from exc
+
+    latlon = _coords_to_latlon(coords, coord_order=coord_order, coords_crs=coords_crs)
+    if latlon.shape[0] == 0:
+        return np.empty(0, dtype=bool)
+
+    land = _load_global_land_geometry()
+    points = gpd.GeoSeries(
+        gpd.points_from_xy(latlon[:, 1], latlon[:, 0]),
+        crs="EPSG:4326",
+    )
+    is_land = points.within(land) | points.touches(land)
+    return np.asarray(is_land, dtype=bool)
+
+
+def apply_coastline_mask(
+    node_coords: np.ndarray,
+    edge_index: np.ndarray,
+    mask_coastline: str | None = "terrestrial",
+    coord_order: str = "latlon",
+    coords_crs: str | CRS | None = "EPSG:4326",
+) -> tuple[np.ndarray, np.ndarray]:
+    """Filter graph nodes and edges to either land or marine locations.
+
+    Parameters
+    ----------
+    node_coords : np.ndarray
+        `N x 2` graph node coordinates.
+    edge_index : np.ndarray
+        `E x 2` edge list over graph nodes.
+    mask_coastline : str, optional
+        Either `"terrestrial"` to keep only land nodes or `"marine"` to keep
+        only non-land nodes.
+    coord_order : str, optional
+        Coordinate order of `node_coords`.
+    coords_crs : str | CRS | None, optional
+        CRS of `node_coords`.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        Filtered node coordinates in `lat, lon` plus the reindexed edge list.
+    """
+    mask_coastline = str(mask_coastline).lower()
+    if mask_coastline not in {"terrestrial", "marine"}:
+        raise ValueError("mask_coastline must be 'terrestrial' or 'marine'")
+
+    latlon = _coords_to_latlon(node_coords, coord_order=coord_order, coords_crs=coords_crs)
+    is_land = classify_land_points(latlon, coord_order="latlon", coords_crs="EPSG:4326")
+    keep_mask = is_land if mask_coastline == "terrestrial" else ~is_land
+
+    keep_nodes = np.flatnonzero(keep_mask)
+    if keep_nodes.size == 0:
+        raise ValueError(f"Coastline mask '{mask_coastline}' removed all graph nodes.")
+
+    old_to_new = np.full(latlon.shape[0], -1, dtype=np.int64)
+    old_to_new[keep_nodes] = np.arange(keep_nodes.size, dtype=np.int64)
+
+    masked_coords = latlon[keep_nodes]
+    edge_keep = keep_mask[edge_index[:, 0]] & keep_mask[edge_index[:, 1]]
+    masked_edges = edge_index[edge_keep]
+    if masked_edges.size == 0:
+        raise ValueError(f"Coastline mask '{mask_coastline}' removed all graph edges.")
+
+    masked_edges = old_to_new[masked_edges]
+    masked_edges = np.sort(masked_edges, axis=1)
+    masked_edges = np.unique(masked_edges, axis=0)
+    keep = masked_edges[:, 0] != masked_edges[:, 1]
+    masked_edges = masked_edges[keep]
+    if masked_edges.size == 0:
+        raise ValueError(f"Coastline mask '{mask_coastline}' produced a graph with no edges.")
+
+    return masked_coords.astype(np.float64, copy=False), masked_edges.astype(np.int64, copy=False)
 
 
 def _cartesian_to_latlon(vertices: np.ndarray) -> np.ndarray:

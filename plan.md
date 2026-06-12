@@ -1,361 +1,296 @@
-# Plan: Add Data-Support-Based Edge Down-Weighting That Is Easy To Toggle Off
+# Plan: Make DGGRID the Default Mesh Builder and Remove the Dense-Mesh Path
 
 ## 1. Goal
-Add an optional mechanism that down-weights edges far from nodes that have observed data, using graph distance to the nearest supported node.
+Refactor mesh construction so that:
+- `build_dggrid_mesh_graph(...)` becomes the default shared mesh backend
+- `build_dense_mesh_graph(...)` is removed entirely
+- any helper that exists only to support `build_dense_mesh_graph(...)` is also removed
+- the rest of the training pipeline continues to operate on the same `(mesh_coords, edge_index)` interface
 
-The design goal is not just correctness. It must also be easy to disable completely without affecting the rest of the code path. The implementation should therefore be isolated, parameterized cleanly, and avoid entangling the core model logic with special-case conditionals.
+This plan is intentionally simplification-oriented. No backward-compatibility layer should be retained unless it is still required by a surviving code path.
 
-No implementation is performed in this plan. This file specifies the changes only.
+No implementation is performed in this plan.
 
-## 2. Desired Behavior
-For each species graph:
-- nodes with observed samples should have full support weight
-- nodes far from any observed sample should have low support weight
-- edges should inherit an attenuation factor based on the support of their endpoint nodes
-- this attenuation should reduce the influence of unsupported regions on effective resistance inference
+## 2. Current State
+The code currently has three graph-construction modes inside `build_species_graphs(...)`:
+- provided graph via `input_graph`
+- shared dense mesh via `build_dense_mesh_graph(...)`
+- shared geodesic mesh via `build_geodesic_mesh_graph(...)`
+- shared DGGRID mesh via `build_dggrid_mesh_graph(...)`
 
-The attenuation should be optional.
+The dense mesh path is the only one that:
+- creates a local regular lattice from a bounding box
+- reconstructs topology with Delaunay
+- filters long perimeter edges afterward
 
-When the feature is off:
-- behavior should be identical to the current implementation
-- no soft warnings
-- no partial application
-- no need for callers to change existing code
+That path is now redundant if DGGRID is the preferred default.
 
-## 3. Recommended Modeling Choice
-Use graph-distance-based support weights and apply them directly to edge conductance during resistance-matrix construction.
+## 3. Target End State
+After the refactor:
+- `build_species_graphs(...)` defaults to `mesh_builder="dggrid"`
+- `build_dense_mesh_graph(...)` no longer exists
+- `mesh_builder="dense"` is no longer accepted
+- any dense-only helpers are deleted
+- all docs/examples/notebooks refer to DGGRID or geodesic, not dense
+- the package has exactly two internal shared-mesh backends:
+  - `dggrid`
+  - `geodesic`
+- plus the separate `input_graph` path
 
-### 3.1 Why graph distance
-Graph distance is the right quantity because:
-- the model operates on the graph, not continuous space
-- clipped meshes and irregular boundaries make Euclidean distance misleading
-- shortest-path distance along the graph reflects actual connectivity support
+## 4. Main Design Decisions
 
-### 3.2 Why direct conductance attenuation
-There are three possible designs:
-1. add support weight as an extra edge feature
-2. directly attenuate conductance/resistance using support weight
-3. use support weight only in a regularization term
-
-Recommendation:
-- use direct conductance attenuation
-
-Reason:
-- this guarantees unsupported edges are down-weighted
-- it matches the stated goal directly
-- it is simpler to reason about than adding support as a learned feature
-- it is easy to toggle with a single parameter
-
-## 4. Isolation Strategy
-This feature should be isolated in three places only:
-1. graph preprocessing: compute support weights
-2. graph container: store support weights
-3. model resistance construction: optionally apply those weights
-
-Everything else should remain unchanged.
-
-In particular:
-- `edge_features` should not be changed
-- existing CV code should not need special handling
-- plotting should not need special handling
-- the default training behavior should stay unchanged when support attenuation is disabled
-
-## 5. Public Toggle Design
-Add one explicit control parameter to training and graph-building code paths.
-
-Recommended parameter name:
-- `support_decay_km: float | None = None`
-
-Interpretation:
-- `None`: feature is disabled, preserve current behavior exactly
-- positive float: enable support attenuation using this decay scale
-
-Optional second parameter:
-- `support_floor: float = 0.01`
-
-Interpretation:
-- minimum multiplicative support retained on very distant edges
-- avoids exact zero conductance scaling and associated numerical instability
-
-This keeps toggling simple:
-- on: set `support_decay_km`
-- off: leave it as `None`
-
-## 6. Data Structures To Add
-
-## 6.1 `SpeciesGraph` additions
-File:
-- `src/multispecies_resistance/graph.py`
-
-Add optional fields:
-- `edge_support_weight: np.ndarray | None = None`
-
-Do not add extra fields unless they are needed for debugging.
-
-Rationale:
-- the downstream model only needs edge-level attenuation
-- storing intermediate node distances and node weights is unnecessary for the first implementation
-- keeping only `edge_support_weight` makes the feature smaller and easier to disable/remove later
-
-If debugging support is needed later, it can be added in a separate pass.
-
-## 7. Graph-Side Implementation Plan
-
-## 7.1 Add graph-distance helper
-File:
-- `src/multispecies_resistance/graph.py`
-
-Add helper:
-- `compute_edge_support_weight(...)`
-
-Suggested signature:
-
-```python
-def compute_edge_support_weight(
-    node_coords: np.ndarray,
-    edge_index: np.ndarray,
-    occupied_nodes: np.ndarray,
-    support_decay_km: float,
-    support_floor: float = 0.01,
-) -> np.ndarray:
-    ...
-```
-
-Inputs:
-- `node_coords`: `N x 2` in `lat, lon`
-- `edge_index`: `E x 2`
-- `occupied_nodes`: integer node ids with observed data for the species
-- `support_decay_km`: positive decay scale
-- `support_floor`: lower bound on support weight
-
-Output:
-- `edge_support_weight`: length `E`, values in `(0, 1]`
-
-### Behavior:
-1. compute edge lengths in km using `haversine_km(...)`
-2. build adjacency with those edge lengths as graph weights
-3. run multi-source Dijkstra from all occupied nodes
-4. obtain `dist_to_supported[node]`
-5. convert node distances into node support weights
-6. convert node support weights into edge support weights
-
-## 7.2 Multi-source shortest path
-Implementation approach:
-- use `scipy.sparse.csgraph.dijkstra(...)` if convenient
-- alternatively implement a small heap-based multi-source Dijkstra in pure Python/NumPy
+## 4.1 Keep backend selection explicit
+Do not remove the backend selector entirely.
 
 Recommendation:
-- prefer `scipy.sparse.csgraph.dijkstra` because SciPy is already a dependency and the implementation will be shorter and clearer
-
-Planned steps:
-1. create sparse weighted adjacency matrix from `edge_index` and edge lengths
-2. pass `indices=occupied_nodes`
-3. request minimum distance to any source
-4. collapse to a single distance vector if the API returns per-source distances
-
-## 7.3 Distance-to-weight transform
-Recommended node-weight function:
-
-```python
-node_weight = support_floor + (1.0 - support_floor) * exp(-dist_to_supported / support_decay_km)
-```
-
-Properties:
-- occupied nodes: distance `0`, weight `1`
-- far nodes: asymptote to `support_floor`
-- no exact zero values
-
-This should be implemented in one small helper or directly inside `compute_edge_support_weight(...)`.
-
-## 7.4 Node-to-edge aggregation rule
-Recommended edge-weight rule:
-
-```python
-edge_support_weight = minimum(node_weight[u], node_weight[v])
-```
+- keep `mesh_builder: str`
+- allowed values become:
+  - `"dggrid"`
+  - `"geodesic"`
 
 Reason:
-- strict and easy to interpret
-- if either endpoint is in weakly supported territory, the edge is weakly supported
+- the geodesic builder is still useful as a pure-Python fallback or comparison mode
+- explicit mesh backend selection keeps the architecture clean
 
-Alternative rules like mean or geometric mean should not be implemented initially.
+## 4.2 Make DGGRID the default
+Change the default signature in `build_species_graphs(...)` from:
+- `mesh_builder: str = "dense"`
 
-## 8. Training-Data Construction Changes
-File:
-- `src/multispecies_resistance/train.py`
+to:
+- `mesh_builder: str = "dggrid"`
 
-## 8.1 Add optional parameter to `build_species_graphs(...)`
-Add:
-- `support_decay_km: float | None = None`
-- `support_floor: float = 0.01`
+That makes the preferred path the default without changing the overall function shape.
 
-Behavior:
-- if `support_decay_km is None`, do not compute support weights
-- if provided, compute per-species `edge_support_weight` after sample-to-node assignment and occupied-node identification
+## 4.3 Remove dense-mode compatibility completely
+Do not keep:
+- `mesh_builder="dense"`
+- deprecated aliasing from `dense` to `dggrid`
+- warning-based compatibility behavior
 
-## 8.2 Where to compute support weight
-For both graph-construction branches in `build_species_graphs(...)`:
-1. assign samples to nodes
-2. compute `site_counts`
-3. determine occupied nodes via `valid = np.where(site_counts > 0)[0]`
-4. if support attenuation is enabled:
-   - call `compute_edge_support_weight(...)`
-   - store result in `SpeciesGraph(edge_support_weight=...)`
-5. if disabled:
-   - store `edge_support_weight=None`
+If a caller still uses `mesh_builder="dense"`, it should fail with a direct `ValueError`.
 
-This keeps the feature local to graph construction and avoids recomputing support distances during training.
+## 5. Code Changes by File
 
-## 8.3 Validation rules
-Add explicit validation:
-- `support_decay_km` must be `None` or `> 0`
-- `support_floor` must satisfy `0 <= support_floor <= 1`
+## 5.1 `src/multispecies_resistance/train.py`
+This is the primary public API change.
 
-If invalid, raise hard errors.
-
-## 9. Model-Side Implementation Plan
-File:
-- `src/multispecies_resistance/model.py`
-
-## 9.1 Keep current API largely intact
-The simplest isolated change is to modify `resistance_matrix(...)` to accept an optional edge attenuation vector.
-
-Suggested change:
-
+### Changes
+1. Change default:
 ```python
-def resistance_matrix(
-    self,
-    species_idx: int,
-    edge_index: torch.Tensor,
-    edge_feat: torch.Tensor,
-    num_nodes: int,
-    edge_support_weight: torch.Tensor | None = None,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    ...
+mesh_builder: str = "dggrid"
 ```
 
-Behavior:
-- if `edge_support_weight is None`, preserve current conductance construction exactly
-- if provided, attenuate conductance before building the Laplacian
-
-## 9.2 Exact attenuation point
-Current logic:
-
+2. Restrict validation:
 ```python
-resistance = softplus(shared + species) + 1e-4
-conductance = 1.0 / resistance
+if mesh_builder not in {"dggrid", "geodesic"}:
+    raise ValueError(...)
 ```
 
-Planned logic:
-
+3. Remove the dense branch from backend dispatch.
+Current conceptual shape:
 ```python
-resistance = softplus(shared + species) + 1e-4
-conductance = 1.0 / resistance
-if edge_support_weight is not None:
-    conductance = conductance * edge_support_weight
+if mesh_builder == "dense":
+    graph_fn = build_dense_mesh_graph
+elif mesh_builder == "geodesic":
+    graph_fn = build_geodesic_mesh_graph
+else:
+    graph_fn = build_dggrid_mesh_graph
 ```
 
-This is the cleanest insertion point.
+Target shape:
+```python
+if mesh_builder == "geodesic":
+    graph_fn = build_geodesic_mesh_graph
+elif mesh_builder == "dggrid":
+    graph_fn = build_dggrid_mesh_graph
+else:
+    raise ValueError(...)
+```
 
-Important point:
-- do not modify logits
-- do not modify `edge_features`
-- do not modify loss definitions
-- only attenuate conductance when constructing the Laplacian
+4. Preserve all downstream logic unchanged:
+- coastline masking
+- raster sampling
+- edge feature construction
+- sample-to-node assignment
+- support weighting
+- smoothing-neighbor construction
 
-This keeps the feature localized and easy to disable.
+### Things to verify
+- no other code path assumes a `dense` default
+- no examples rely on omitting `mesh_builder` and then mentally expecting the old dense mesh
 
-## 10. Training Loop Changes
-File:
-- `src/multispecies_resistance/train.py`
+## 5.2 `src/multispecies_resistance/graph.py`
+This is the main cleanup site.
 
-## 10.1 Pass optional support weights into the model
-Inside `train_model(...)`, when looping over `species_graphs`:
-- if `g.edge_support_weight is not None`, convert it to torch and pass it to `model.resistance_matrix(...)`
-- otherwise pass `None`
+### Remove the dense mesh builder
+Delete:
+- `build_dense_mesh_graph(...)`
 
-This is the only training-loop change needed.
+### Remove dense-only helpers if truly unused
+Candidates to remove:
+- `grid_nodes_from_bbox(...)`
+- `_filter_long_mesh_edges(...)`
+- `build_delaunay_graph(...)`
 
-## 10.2 Do not add new training hyperparameters here
-The toggle should live in graph construction, not in `train_model(...)`.
+These should be removed only if they are no longer referenced anywhere else after the refactor.
 
-Reason:
-- support attenuation is a property of the graph/data support geometry
-- it should be baked into the graph object and then consumed uniformly during training
-- this makes it much easier to reason about and easier to turn off by rebuilding graphs without support attenuation
+### Keep shared helpers still used by surviving backends
+Expected survivors:
+- `_coords_to_latlon(...)`
+- `_spacing_km_from_deg(...)`
+- `_resolve_bbox_spec(...)`
+- `_study_region_geometry(...)`
+- `_clip_graph_to_region(...)`
+- `_largest_connected_component(...)`
+- geodesic helpers
+- DGGRID helpers
+- coastline helpers
+- edge feature helpers
 
-## 11. Optional Debug/Inspection Support
-This is optional and should not block the first implementation.
+### Specific dead-code audit requirement
+Before deleting helper functions, verify references across the repo.
+The implementation should explicitly check whether each of these is still used:
+- `build_delaunay_graph(...)`
+- `grid_nodes_from_bbox(...)`
+- `_filter_long_mesh_edges(...)`
 
-Possible additions later:
-- helper to plot `edge_support_weight` on a graph
-- helper to inspect node distance-to-support statistics
+If any of them are used outside the dense builder, they must either:
+- remain, or
+- be refactored into the surviving caller appropriately
 
-These should not be part of the first pass unless needed for debugging.
+The user explicitly wants unused pieces removed, so this dead-code audit is required.
 
-## 12. Documentation Plan
-Files to update when implementing:
-- `src/multispecies_resistance/graph.py` docstrings
-- `src/multispecies_resistance/train.py` docstrings
-- `src/multispecies_resistance/model.py` docstrings
-- `README.md`
-- `docs/graph.md`
-- `docs/train.md`
+## 5.3 `src/multispecies_resistance/__init__.py`
+Update exports.
 
-Key documentation points:
-- support attenuation is optional and disabled by default
-- it down-weights conductance on edges far from occupied nodes
-- it uses graph distance, not Euclidean distance
-- it is controlled by `support_decay_km`
-- setting `support_decay_km=None` fully disables it
+### Remove exports
+If deleted from `graph.py`, also remove from package exports:
+- `build_dense_mesh_graph`
+- `build_delaunay_graph` if deleted
 
-## 13. Validation Plan
+### Keep exports
+- `build_dggrid_mesh_graph`
+- `build_geodesic_mesh_graph`
 
-## 13.1 Static validation
-1. with `support_decay_km=None`, all existing call paths still work
-2. `SpeciesGraph` can still be constructed without `edge_support_weight`
-3. `train_model(...)` still works on graphs without support weights
+This should reflect the simplified supported API.
 
-## 13.2 Behavioral validation when enabled
-1. edges adjacent to occupied nodes have support weight near `1`
-2. edges deep in unsupported regions have support weight near `support_floor`
-3. support weights are monotone with graph distance from occupied nodes
-4. no NaNs or infs in support weights
+## 5.4 `README.md`
+Update the user-facing description of graph construction.
 
-## 13.3 End-to-end validation
-1. build graphs with and without support attenuation on the same dataset
-2. verify identical outputs when attenuation is off
-3. verify that unsupported remote regions contribute less when attenuation is on
-4. inspect inferred edge patterns to confirm remote unsupported regions are suppressed
+### Required edits
+1. Replace references to “shared dense mesh” as the default.
+2. State clearly that the default shared mesh backend is DGGRID.
+3. Update any example calls or explanatory text that imply dense is the default.
+4. Update any “alternative mesh builder” language so it reflects the new hierarchy:
+- default: DGGRID
+- alternative: geodesic
+- provided graph: `input_graph`
 
-## 13.4 Numerical validation
-1. Laplacian remains well-defined when support weights are near `support_floor`
-2. effective resistance computation still succeeds
-3. no disconnected-graph numerical failures are introduced solely by attenuation
+### Suggested wording direction
+- “By default, `build_species_graphs(...)` builds a shared triangular DGGRID mesh.”
+- “Set `mesh_builder="geodesic"` to use the geodesic fallback mesh instead.”
 
-## 14. Reasons This Design Is Easy To Toggle Off
-This design is intentionally easy to disable because:
-- the public toggle is a single parameter: `support_decay_km=None`
-- all graph-preprocessing code is behind one conditional in `build_species_graphs(...)`
-- all model behavior changes are behind one optional argument in `resistance_matrix(...)`
-- when disabled, `edge_support_weight=None` flows through the system and current behavior is preserved exactly
-- no edge features, losses, or graph topology are modified when disabled
+## 5.5 `docs/train.md`
+Update the training docs.
 
-## 15. Implementation Order
-1. add `edge_support_weight` field to `SpeciesGraph`
-2. add `compute_edge_support_weight(...)` helper to `graph.py`
-3. add optional `support_decay_km` and `support_floor` to `build_species_graphs(...)`
-4. compute/store support weights during graph construction when enabled
-5. extend `model.resistance_matrix(...)` with optional `edge_support_weight`
-6. pass support weights through `train_model(...)`
-7. update docs and examples
-8. run compile and basic graph-building checks
+### Required edits
+- remove mention of dense as a supported backend
+- state that `mesh_builder` accepts only `"dggrid"` and `"geodesic"`
+- note that DGGRID is the default
+- update any references that describe the default path as a dense mesh
 
-## 16. Explicit Non-Goals For The First Pass
-To keep the feature isolated and simple, do not do any of the following in the first implementation:
-- do not change `edge_features`
-- do not add support weight as a learned feature column
-- do not prune edges or nodes from the graph
-- do not introduce species-specific support-decay models beyond the per-graph computation
-- do not modify CV logic
-- do not add plotting/UI features unless needed for debugging
+## 5.6 `docs/graph.md`
+Update graph docs to reflect the new supported mesh builders.
+
+### Required edits
+- remove the section for `build_dense_mesh_graph(...)`
+- remove documentation for deleted dense-only helpers
+- keep or update documentation for any remaining reusable helper that survives the audit
+- keep the DGGRID and geodesic sections
+- make the DGGRID section clearly the primary shared mesh builder
+
+## 5.7 `docs/overview.md` and other docs pages
+Search and replace any statements that say:
+- shared dense mesh is the default
+- dense mesh is the standard path
+
+Update diagrams or overview text if they explicitly mention “dense mesh”.
+
+## 5.8 Notebooks and examples
+Update notebooks and example scripts to match the new semantics.
+
+### Required checks
+- examples that omit `mesh_builder` should still be valid, now implying DGGRID
+- examples that explicitly pass `mesh_builder="dense"` must be updated or removed
+- any narrative text referring to dense mesh should be rewritten
+
+Likely files to inspect:
+- `examples/minimal_prototype.py`
+- notebooks under `notebooks/`
+- any docs snippets mirrored in notebooks
+
+## 5.9 `environment.yml`
+Ensure DGGRID remains listed as a dependency.
+
+Since DGGRID becomes the default backend, this dependency is no longer optional in practice.
+
+## 6. Behavioral Checks After Refactor
+
+## 6.1 Public API behavior
+Confirm that:
+- `build_species_graphs(...)` with no `mesh_builder` argument uses DGGRID
+- `build_species_graphs(..., mesh_builder="geodesic")` still works
+- `build_species_graphs(..., mesh_builder="dense")` raises a hard error
+
+## 6.2 Structural checks
+Confirm that:
+- shared graph output still has `mesh_coords` / `edge_index` in the same shape conventions
+- coastline masking still works on DGGRID and geodesic outputs
+- raster sampling still operates on the surviving node coordinates
+- downstream training code is unchanged
+
+## 6.3 Dead-code cleanup checks
+Confirm that no deleted symbol is still referenced anywhere in the repo.
+At minimum search for:
+- `build_dense_mesh_graph`
+- `grid_nodes_from_bbox`
+- `_filter_long_mesh_edges`
+- `build_delaunay_graph`
+
+Any remaining reference must either be removed or justified by a surviving use.
+
+## 7. Implementation Sequence
+1. Update `build_species_graphs(...)` to make DGGRID the default and remove dense as an accepted backend.
+2. Remove `build_dense_mesh_graph(...)` from `graph.py`.
+3. Remove any helper that was only supporting the dense mesh path.
+4. Update package exports in `__init__.py`.
+5. Update docs and README.
+6. Update examples and notebooks.
+7. Run code search to confirm no stale references remain.
+8. Run compile and notebook JSON validation.
+
+## 8. Validation Plan
+At minimum:
+- `python -m py_compile src/multispecies_resistance/*.py examples/minimal_prototype.py`
+- notebook JSON parse check for all notebooks
+- repository-wide search for removed dense-mesh symbols
+
+If the runtime environment supports it, also perform:
+- one smoke test with default DGGRID backend
+- one smoke test with `mesh_builder="geodesic"`
+
+## 9. Non-Goals
+This refactor should not:
+- redesign the DGGRID builder itself
+- redesign geodesic mesh generation
+- change the graph feature schema
+- change training logic
+- preserve dense-mesh compatibility
+
+## 10. Expected Result
+After this refactor, the package has a simpler and more opinionated shared-mesh story:
+- default shared mesh: DGGRID
+- alternate shared mesh: geodesic
+- explicit custom graph: `input_graph`
+
+The local dense-lattice + Delaunay path is removed entirely, along with any helper code that existed only to support it.

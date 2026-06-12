@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "meadow"
-version = "0.2.2"
+version = "0.2.3"
 description = "Multispecies estimation of dispersal on networks"
 readme = "README.md"
 requires-python = ">=3.9"

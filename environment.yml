@@ -12,9 +12,11 @@ dependencies:
   - jupyterlab
   - contextily
   - geopandas
+  - geodatasets
   - folium
   - pykrige
   - networkx
   - trimesh
+  - dggrid
   - mkdocs
   - mkdocs-material

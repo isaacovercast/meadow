@@ -9,8 +9,8 @@ import pandas as pd
 
 from sklearn.impute import SimpleImputer
 
-from multispecies_resistance.data import SpeciesData
-from multispecies_resistance.vcf_to_hdf5 import VCFtoHDF5
+from meadow.data import SpeciesData
+from meadow.vcf_to_hdf5 import VCFtoHDF5
 
 def list_species(root: str | Path) -> List[str]:
     """List species names that have matching coordinate and genotype files.

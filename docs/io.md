@@ -1,6 +1,6 @@
 # I/O Utilities
 
-`multispecies_resistance.io` provides sample-level loading for PEDIC FEEMS-style files.
+`meadow.io` provides sample-level loading for PEDIC FEEMS-style files.
 
 ## PEDIC File Convention
 Each species should include:

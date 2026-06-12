@@ -1,6 +1,6 @@
 # Visualization Utilities
 
-`multispecies_resistance.viz` provides static matplotlib plots and optional interactive folium views for site distributions, species-specific edge resistance, multi-species summaries, and shared resistance surfaces.
+`meadow.viz` provides static matplotlib plots and optional interactive folium views for site distributions, species-specific edge resistance, multi-species summaries, and shared resistance surfaces.
 
 ## Colormap
 The module defines a default resistance colormap (`edge_cmap`) derived from EEMS-style colors and uses it in edge/surface plotting functions.

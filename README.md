@@ -4,7 +4,7 @@ A Python machine-learning tool for quantifying shared and species-specific migra
 
 ## What this does
 - Keeps species data at the observed sample level (`name`, `genotypes`, `sample_coords`)
-- Builds graph nodes/edges inside `build_species_graphs(...)` using either a shared dense mesh or a provided input graph
+- Builds graph nodes/edges inside `build_species_graphs(...)` using a shared mesh backend (`dggrid` by default, or `geodesic`) or a provided input graph
 - Samples environmental rasters at the exact graph nodes used for training
 - Learns shared and species-specific edge resistances and fits genetic distances via effective resistance
 
@@ -12,7 +12,7 @@ A Python machine-learning tool for quantifying shared and species-specific migra
 
 ```bash
 conda env create -f environment.yml
-conda activate multispecies-resistance
+conda activate meadow
 ```
 
 ## Core data model
@@ -27,7 +27,7 @@ Graph-node assignment (and any sample-to-node remapping) is performed in `build_
 ## Building graphs
 
 ```python
-from multispecies_resistance.train import build_species_graphs
+from meadow.train import build_species_graphs
 
 graphs, stats = build_species_graphs(
     species_list,
@@ -50,7 +50,7 @@ ax, gdf_edges = graphs[0].plot(edge_feature_idx=0, basemap=True)
 Training can optionally smooth neighboring predicted edge logits:
 
 ```python
-from multispecies_resistance.train import train_model
+from meadow.train import train_model
 
 model = train_model(graphs, edge_smoothing=0.5)
 ```
@@ -82,7 +82,7 @@ graphs, stats = build_species_graphs(
 ## WorldClim / BioClim helper
 
 ```python
-from multispecies_resistance.climate import download_climate_layers
+from meadow.climate import download_climate_layers
 
 raster_paths = download_climate_layers(
     source="bioclim",
@@ -107,15 +107,17 @@ graphs, stats = build_species_graphs(
 )
 ```
 
-Pass `input_graph="/path/to/graph.gml"` when you want to use a provided shared graph instead of the default dense mesh.
-When `input_graph` is omitted and `mesh_spacing_km=None` (the default), the mesh spacing is chosen automatically from nearest-neighbor sample distances.
+Pass `input_graph="/path/to/graph.gml"` when you want to use a provided shared graph instead of the default DGGRID mesh.
+When `input_graph` is omitted, set `mesh_builder="dggrid"` or `"geodesic"` to choose the shared mesh backend.
+When `mesh_spacing_km=None` (the default), the mesh spacing is chosen automatically from nearest-neighbor sample distances.
+The `dggrid` backend assumes the `dggrid` command is installed in the environment and available on `PATH`.
 
 ## PEDIC FEEMS loader
 
 `load_pedic_species(...)` now only loads sample-level inputs:
 
 ```python
-from multispecies_resistance.io import load_pedic_species
+from meadow.io import load_pedic_species
 
 species_list = load_pedic_species(
     "/Users/isaac/src/meems/pedic_feems_files",
@@ -130,12 +132,12 @@ Then build graphs (and optionally sample rasters) in `build_species_graphs(...)`
 - `notebooks/example_geotiff_pseudosites.ipynb`: sample-level workflow using synthetic raster input
 
 ## Key files
-- `src/multispecies_resistance/data.py`: sample-level species container and genotype aggregation
-- `src/multispecies_resistance/graph.py`: graph construction and edge feature utilities
-- `src/multispecies_resistance/train.py`: graph dataset construction + training loop
-- `src/multispecies_resistance/model.py`: neural resistance model
-- `src/multispecies_resistance/io.py`: PEDIC sample-level loader
+- `src/meadow/data.py`: sample-level species container and genotype aggregation
+- `src/meadow/graph.py`: graph construction and edge feature utilities
+- `src/meadow/train.py`: graph dataset construction + training loop
+- `src/meadow/model.py`: neural resistance model
+- `src/meadow/io.py`: PEDIC sample-level loader
 
 ## Alternative mesh builder
 
-`multispecies_resistance.graph.build_geodesic_mesh_graph(...)` builds a clipped geodesic triangular mesh from a `trimesh` icosphere while preserving native mesh adjacency. It is implemented as an additive alternative to `build_dense_mesh_graph(...)` and returns the same `(mesh_coords, edge_index)` structure.
+`meadow.graph.build_geodesic_mesh_graph(...)` builds a clipped geodesic triangular mesh from a `trimesh` icosphere while preserving native mesh adjacency. `meadow.graph.build_dggrid_mesh_graph(...)` calls an external DGGRID-style executable and converts the generated triangular cells into a vertex-edge graph of triangle sides. Both return the same `(mesh_coords, edge_index)` graph structure.

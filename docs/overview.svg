@@ -41,7 +41,7 @@
   <rect x="370" y="120" width="310" height="220" class="boxBlue"/>
   <text x="388" y="150" class="h">2) Node Assignment (in graph build)</text>
   <text x="388" y="176" class="b">input_graph: nearest-node mapping to provided graph</text>
-  <text x="388" y="198" class="b">default: nearest-node mapping to shared dense mesh</text>
+  <text x="388" y="198" class="b">default: nearest-node mapping to shared DGGRID mesh</text>
   <text x="388" y="220" class="b">Aggregate genotypes after assignment</text>
   <text x="388" y="254" class="mono">build_species_graphs(...)</text>
   <text x="388" y="276" class="mono">aggregate_site_genotypes(...)</text>
@@ -51,7 +51,7 @@
   <rect x="720" y="120" width="330" height="260" class="boxGreen"/>
   <text x="738" y="150" class="h">3) Graph Construction</text>
   <text x="738" y="176" class="b">Choose one mode in build_species_graphs(...):</text>
-  <text x="738" y="202" class="b">- default shared dense mesh across species</text>
+  <text x="738" y="202" class="b">- default shared DGGRID mesh across species</text>
   <text x="738" y="224" class="b">- input_graph (.gml) shared global graph</text>
   <text x="738" y="246" class="b">mesh_grid_type controls the mesh layout</text>
   <text x="738" y="272" class="b">bbox: square / convex_hull / polygon file</text>
@@ -111,5 +111,5 @@
   <path d="M1040 520 L1080 520" class="arrow"/>
   <path d="M1180 420 L1180 460" class="arrow dash"/>
 
-  <text x="40" y="808" class="subtitle">File: docs/overview.svg | This diagram reflects the current implementation in src/multispecies_resistance.</text>
+  <text x="40" y="808" class="subtitle">File: docs/overview.svg | This diagram reflects the current implementation in src/meadow.</text>
 </svg>

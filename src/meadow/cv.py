@@ -9,8 +9,8 @@ import numpy as np
 import torch
 from scipy.spatial import cKDTree
 
-from multispecies_resistance.graph import SpeciesGraph, haversine_km, project_coords
-from multispecies_resistance.train import train_model
+from meadow.graph import SpeciesGraph, haversine_km, project_coords
+from meadow.train import train_model
 
 
 @dataclass

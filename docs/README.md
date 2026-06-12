@@ -1,6 +1,6 @@
 # Overview
 
-`multispecies-resistance` is a prototype for jointly modeling landscape resistance across multiple species from sample-level genotype data.
+`meadow` is a prototype for jointly modeling landscape resistance across multiple species from sample-level genotype data.
 
 ## End-to-End Workflow
 

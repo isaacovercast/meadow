@@ -1,9 +1,9 @@
 # Training Utilities
 
-`multispecies_resistance.train` converts sample-level `SpeciesData` inputs into graph training records, including sample-to-node assignment, optional raster covariate sampling at graph nodes, and model optimization.
+`meadow.train` converts sample-level `SpeciesData` inputs into graph training records, including sample-to-node assignment, optional raster covariate sampling at graph nodes, and model optimization.
 
 ## Graph Output Type
-`build_species_graphs(...)` returns `SpeciesGraph` objects (defined in `multispecies_resistance.graph`), each carrying:
+`build_species_graphs(...)` returns `SpeciesGraph` objects (defined in `meadow.graph`), each carrying:
 - `name`: species identifier.
 - `node_coords`: graph node coordinates.
 - `sample_coords`: original observed sample coordinates.
@@ -18,10 +18,12 @@ Builds graph training data from sample-level species records.
 
 Key behavior:
 
-- `input_graph=None`: builds a shared dense mesh and assigns each sample to the nearest mesh node.
+- `input_graph=None`: builds a shared mesh and assigns each sample to the nearest mesh node.
 - `input_graph=...`: uses provided global graph nodes and assigns each sample to the nearest graph node.
-- `mesh_grid_type`: controls the layout of the default shared mesh.
+- `mesh_builder`: chooses the shared mesh backend: `"dggrid"` (default) or `"geodesic"`.
+- `mesh_grid_type`: retained for compatibility; surviving shared mesh backends support triangular layouts.
 - `mesh_spacing_km=None`: automatically picks a spacing from nearest-neighbor sample distances.
+- `mask_coastline`: keeps only `"terrestrial"` or only `"marine"` graph nodes before sample assignment; the default is terrestrial.
 - `support_decay_km`: optional graph-distance decay scale for down-weighting unsupported edges; `None` disables the feature.
 - `support_floor`: lower bound retained on distant edges when support attenuation is enabled.
 

@@ -1,6 +1,6 @@
 # Raster Utilities
 
-`multispecies_resistance.raster` handles extraction of environmental raster values at point locations. It supports single-raster sampling, multi-raster concatenation, path discovery, and a reusable `RasterStack` for repeated sampling.
+`meadow.raster` handles extraction of environmental raster values at point locations. It supports single-raster sampling, multi-raster concatenation, path discovery, and a reusable `RasterStack` for repeated sampling.
 
 ## `sample_raster_at_points(raster_path, coords, coord_order="latlon", coords_crs="EPSG:4326", fill_method="nan")`
 Samples one raster file at coordinate points.

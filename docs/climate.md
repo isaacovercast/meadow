@@ -1,8 +1,8 @@
 # Climate Utilities
 
-`multispecies_resistance.climate` adds a download-and-cache layer for WorldClim/BioClim rasters and provides a high-level sampling function that directly returns site-level environmental matrices.
+`meadow.climate` adds a download-and-cache layer for WorldClim/BioClim rasters and provides a high-level sampling function that directly returns site-level environmental matrices.
 
-## `download_climate_layers(source="bioclim", variables=None, resolution="2.5m", cache_dir="~/.cache/multispecies_resistance/climate", force_download=False, base_url=None, timeout=120)`
+## `download_climate_layers(source="bioclim", variables=None, resolution="2.5m", cache_dir="~/.cache/meadow/climate", force_download=False, base_url=None, timeout=120)`
 Downloads and extracts requested climate raster groups to a local cache and reuses existing cached files by default.
 
 Parameters:
@@ -19,7 +19,7 @@ Returns:
 
 - `raster_paths`: list of resolved cached GeoTIFF paths in deterministic order.
 
-## `sample_climate_for_sites(site_coords, source="bioclim", variables=None, resolution="2.5m", cache_dir="~/.cache/multispecies_resistance/climate", coord_order="latlon", coords_crs="EPSG:4326", fill_method="nearest", force_download=False, base_url=None, timeout=120)`
+## `sample_climate_for_sites(site_coords, source="bioclim", variables=None, resolution="2.5m", cache_dir="~/.cache/meadow/climate", coord_order="latlon", coords_crs="EPSG:4326", fill_method="nearest", force_download=False, base_url=None, timeout=120)`
 Downloads climate layers if needed, samples them at provided coordinates, and optionally subsets to requested variables.
 
 Parameters:
@@ -45,7 +45,7 @@ Returns:
 ## Typical Usage
 
 ```python
-from multispecies_resistance.climate import sample_climate_for_sites
+from meadow.climate import sample_climate_for_sites
 
 site_env, env_names, raster_paths = sample_climate_for_sites(
     site_coords,

@@ -1,6 +1,6 @@
 # Model
 
-`multispecies_resistance.model` defines neural components that map edge features to resistance and then compute effective resistance between all node pairs via graph Laplacian algebra. The architecture combines a shared edge network with species-specific deviation networks.
+`meadow.model` defines neural components that map edge features to resistance and then compute effective resistance between all node pairs via graph Laplacian algebra. The architecture combines a shared edge network with species-specific deviation networks.
 
 ![Model Architecture](model_architecture.svg)
 

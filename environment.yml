@@ -1,4 +1,4 @@
-name: multispecies-resistance
+name: meadow
 channels:
   - conda-forge
 dependencies:

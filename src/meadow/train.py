@@ -6,8 +6,8 @@ from typing import Iterable, List
 import numpy as np
 import torch
 
-from multispecies_resistance.data import SpeciesData, aggregate_site_genotypes, pairwise_site_distance
-from multispecies_resistance.graph import (
+from meadow.data import SpeciesData, aggregate_site_genotypes, pairwise_site_distance
+from meadow.graph import (
     SpeciesGraph,
     apply_coastline_mask,
     build_edge_neighbor_pairs,
@@ -19,8 +19,8 @@ from multispecies_resistance.graph import (
     project_coords,
     standardize_features,
 )
-from multispecies_resistance.model import MultiSpeciesResistanceModel
-from multispecies_resistance.raster import RasterStack, resolve_raster_paths
+from meadow.model import MultiSpeciesResistanceModel
+from meadow.raster import RasterStack, resolve_raster_paths
 
 
 torch.set_default_dtype(torch.float64)

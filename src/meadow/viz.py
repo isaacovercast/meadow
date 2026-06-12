@@ -213,7 +213,7 @@ def plot_species_resistance(
         raise ValueError("coord_order must be 'latlon' or 'lonlat'")
 
     if basemap is not None and basemap is not False:
-        from multispecies_resistance.graph import project_coords
+        from meadow.graph import project_coords
 
         coords = project_coords(
             site_coords,
@@ -258,7 +258,7 @@ def plot_species_resistance(
     if show_sites:
         coords_plot = site_coords if sample_coords is None else sample_coords
         if basemap is not None and basemap is not False:
-            from multispecies_resistance.graph import project_coords
+            from meadow.graph import project_coords
 
             coords_s = project_coords(
                 coords_plot,
@@ -402,7 +402,7 @@ def plot_multi_edge_resistance(
             raise ValueError("coord_order must be 'latlon' or 'lonlat'")
 
         if basemap is not None and basemap is not False:
-            from multispecies_resistance.graph import project_coords
+            from meadow.graph import project_coords
 
             coords = project_coords(
                 _site_coords,
@@ -706,7 +706,7 @@ def plot_shared_resistance(
         raise ValueError("coord_order must be 'latlon' or 'lonlat'")
 
     if basemap is not None and basemap is not False:
-        from multispecies_resistance.graph import project_coords
+        from meadow.graph import project_coords
 
         coords = project_coords(
             g.node_coords,
@@ -824,7 +824,7 @@ def plot_shared_resistance(
             x_s = sp.sample_coords[:, 0]
             y_s = sp.sample_coords[:, 1]
         if basemap is not None and basemap is not False:
-            from multispecies_resistance.graph import project_coords
+            from meadow.graph import project_coords
 
             coords_s = project_coords(
                 sp.sample_coords,

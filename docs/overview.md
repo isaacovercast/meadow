@@ -1,11 +1,11 @@
 # Overview
 
-`multispecies-resistance` is a compact prototype for jointly modeling landscape resistance across multiple species. The package combines graph-based effective resistance with neural edge models so you can estimate shared barriers/corridors and species-specific deviations from SNP-derived genetic distances.
+`meadow` is a compact prototype for jointly modeling landscape resistance across multiple species. The package combines graph-based effective resistance with neural edge models so you can estimate shared barriers/corridors and species-specific deviations from SNP-derived genetic distances.
 
 ## End-to-End Workflow
 
 1. **Load data:** Use `SpeciesData` directly or `load_pedic_species(...)` for PEDIC-style inputs.
-2. **Create graph inputs:** Build a shared dense mesh by default, or pass `input_graph` to use a provided shared graph with `build_species_graphs(...)`.
+2. **Create graph inputs:** Build a shared DGGRID mesh by default, set `mesh_builder="geodesic"` for the alternate geodesic mesh, or pass `input_graph` to use a provided shared graph with `build_species_graphs(...)`.
 3. **Train model:** Fit shared/species resistance using `train_model(...)` with optional validation splits and early stopping.
 4. **Visualize outputs:** Plot species-specific edge resistance, multi-species overlays, shared resistance surfaces, and matrix summaries with functions in `viz`.
 

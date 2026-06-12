@@ -13,7 +13,7 @@ import numpy as np
 import rasterio
 from rasterio.crs import CRS
 
-from multispecies_resistance.raster import RasterStack
+from meadow.raster import RasterStack
 
 WORLDCLIM_BASE_URL = "https://geodata.ucdavis.edu/climate/worldclim/2_1/base"
 
@@ -258,7 +258,7 @@ def _download_file(url: str, dst: Path, timeout: int) -> None:
         Writes the downloaded file to `dst`.
     """
     dst.parent.mkdir(parents=True, exist_ok=True)
-    req = urllib.request.Request(url, headers={"User-Agent": "multispecies-resistance/0.1"})
+    req = urllib.request.Request(url, headers={"User-Agent": "meadow/0.1"})
     with urllib.request.urlopen(req, timeout=timeout) as resp, open(dst, "wb") as f:
         shutil.copyfileobj(resp, f)
 
@@ -291,7 +291,7 @@ def download_climate_layers(
     source: str = "bioclim",
     variables: Sequence[str] | None = None,
     resolution: str = "2.5m",
-    cache_dir: str | Path = "~/.cache/multispecies_resistance/climate",
+    cache_dir: str | Path = "~/.cache/meadow/climate",
     force_download: bool = False,
     base_url: str | None = None,
     timeout: int = 120,
@@ -496,7 +496,7 @@ def sample_climate_for_sites(
     source: str = "bioclim",
     variables: Sequence[str] | None = None,
     resolution: str = "2.5m",
-    cache_dir: str | Path = "~/.cache/multispecies_resistance/climate",
+    cache_dir: str | Path = "~/.cache/meadow/climate",
     coord_order: str = "latlon",
     coords_crs: str | CRS | None = "EPSG:4326",
     fill_method: str = "nearest",

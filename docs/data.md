@@ -1,6 +1,6 @@
 # Data Utilities
 
-`multispecies_resistance.data` now defines a strictly sample-level species container and low-level genotype aggregation helpers.
+`meadow.data` now defines a strictly sample-level species container and low-level genotype aggregation helpers.
 
 ## `SpeciesData`
 `SpeciesData` is the canonical in-memory input record for one species.

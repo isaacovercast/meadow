@@ -7,7 +7,7 @@ import numpy as np
 import rasterio
 from rasterio.transform import from_origin
 
-from multispecies_resistance.climate import download_climate_layers, sample_climate_for_sites
+from meadow.climate import download_climate_layers, sample_climate_for_sites
 
 
 def _write_tif(path: Path, value: float) -> None:

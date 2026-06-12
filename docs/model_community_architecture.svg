@@ -64,7 +64,7 @@
   <rect x="985" y="166" width="56" height="92" class="box"/>
   <rect x="1106" y="194" width="18" height="78" class="thin"/>
   <rect x="1115" y="186" width="18" height="78" class="thin"/>
-  <text x="804" y="316" class="label">Shared genetic pattern</text>
+  <text x="804" y="316" class="label">Shared community pattern</text>
   <line x1="724" y1="200" x2="837" y2="200" class="line"/>
   <line x1="911" y1="212" x2="985" y2="212" class="line"/>
   <line x1="1041" y1="220" x2="1115" y2="220" class="line"/>
@@ -78,7 +78,7 @@
   <rect x="985" y="508" width="56" height="92" class="box"/>
   <rect x="1106" y="536" width="18" height="78" class="thin"/>
   <rect x="1115" y="528" width="18" height="78" class="thin"/>
-  <text x="806" y="658" class="label">Species-specific genetic patterns</text>
+  <text x="806" y="658" class="label">Species-specific community patterns</text>
   <line x1="724" y1="254" x2="724" y2="552" class="line"/>
   <line x1="724" y1="552" x2="837" y2="552" class="line"/>
   <line x1="911" y1="564" x2="985" y2="564" class="line"/>
@@ -90,7 +90,7 @@
   <line x1="1133" y1="220" x2="1258" y2="220" class="line"/>
   <line x1="1133" y1="567" x2="1258" y2="567" class="line"/>
   <text x="1170" y="640" class="label">Shared + species-specific</text>
-  <text x="1200" y="665" class="label">genetic patterns</text>
+  <text x="1200" y="665" class="label">community patterns</text>
 
   <!-- Edge resistance vector -->
   <rect x="1360" y="266" width="28" height="260" class="thin"/>
@@ -103,7 +103,7 @@
   <polygon points="1460,224 1518,278 1518,518 1460,464" class="thin"/>
   <polygon points="1518,278 1664,278 1664,518 1518,518" class="box"/>
   <line x1="1402" y1="392" x2="1460" y2="392" class="line"/>
-  <text x="1540" y="550" class="label">Global genetic</text>
+  <text x="1530" y="550" class="label">Global dispersal</text>
   <text x="1530" y="575" class="label">resistance matrix</text>
 
   <!-- Prediction output -->
@@ -111,7 +111,8 @@
   <rect x="1572" y="628" width="24" height="114" class="thin"/>
   <line x1="1518" y1="518" x2="1518" y2="685" class="line"/>
   <line x1="1518" y1="685" x2="1572" y2="685" class="line"/>
-  <text x="1440" y="775" class="label">Predicted genetic distances</text>
+  <text x="1490" y="775" class="label">Predicted community</text>
+  <text x="1520" y="800" class="label">dissimilarity</text>
 
   <!-- DNA input -->
   <rect x="88" y="560" width="166" height="176" class="box"/>
@@ -138,13 +139,13 @@
   <circle cx="238" cy="674" r="3" class="dot"/>
   <circle cx="160" cy="702" r="3" class="dot"/>
   <circle cx="214" cy="706" r="3" class="dot"/>
-  <text x="100" y="772" class="label">DNA sequence data</text>
+  <text x="50" y="772" class="label">Species presence/absence data</text>
 
   <!-- Observed target -->
   <rect x="438" y="620" width="24" height="116" class="thin"/>
   <rect x="450" y="608" width="24" height="116" class="thin"/>
   <line x1="280" y1="636" x2="450" y2="636" class="line"/>
-  <text x="340" y="765" class="label">Observed genetic distances</text>
+  <text x="340" y="765" class="label">Observed community dissimilarity</text>
 
   <!-- Compare -->
   <circle cx="1260" cy="686" r="8" class="dot"/>

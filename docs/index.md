@@ -18,9 +18,9 @@ This documentation covers the sample-level workflow for loading species data, bu
 ## Quick Start
 
 ```python
-from multispecies_resistance.io import load_pedic_species
-from multispecies_resistance.climate import download_climate_layers
-from multispecies_resistance.train import build_species_graphs, train_model
+from meadow.io import load_pedic_species
+from meadow.climate import download_climate_layers
+from meadow.train import build_species_graphs, train_model
 
 species_list = load_pedic_species("/path/to/pedic")
 raster_paths = download_climate_layers(source="bioclim", variables=["bio1", "bio12"])

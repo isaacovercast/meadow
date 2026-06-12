@@ -1,8 +1,0 @@
-numpy
-scipy
-torch
-rasterio
-matplotlib
-
-[dev]
-jupyterlab

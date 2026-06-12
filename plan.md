@@ -1,296 +1,252 @@
-# Plan: Make DGGRID the Default Mesh Builder and Remove the Dense-Mesh Path
+# Plan: Rename the Package from `meadow` to `meadow`
 
 ## 1. Goal
-Refactor mesh construction so that:
-- `build_dggrid_mesh_graph(...)` becomes the default shared mesh backend
-- `build_dense_mesh_graph(...)` is removed entirely
-- any helper that exists only to support `build_dense_mesh_graph(...)` is also removed
-- the rest of the training pipeline continues to operate on the same `(mesh_coords, edge_index)` interface
+Rename the Python package and import namespace from:
+- `meadow`
 
-This plan is intentionally simplification-oriented. No backward-compatibility layer should be retained unless it is still required by a surviving code path.
+to:
+- `meadow`
+
+The package should remain a normal `src/`-layout Python package.
+
+That means the target layout is:
+- `src/meadow/__init__.py`
+- `src/meadow/graph.py`
+- `src/meadow/train.py`
+- etc.
+
+This plan explicitly does **not** flatten modules directly into `src/`, because that would make the packaging and imports worse.
 
 No implementation is performed in this plan.
 
-## 2. Current State
-The code currently has three graph-construction modes inside `build_species_graphs(...)`:
-- provided graph via `input_graph`
-- shared dense mesh via `build_dense_mesh_graph(...)`
-- shared geodesic mesh via `build_geodesic_mesh_graph(...)`
-- shared DGGRID mesh via `build_dggrid_mesh_graph(...)`
+## 2. Desired End State
+After the rename:
+- source code lives in `src/meadow/`
+- all internal imports use `meadow`
+- all public examples/docs/notebooks import from `meadow`
+- package metadata refers to the new project/package identity
+- no remaining imports or references to `meadow` remain except historical prose if intentionally preserved
+ - Do not retain any references to `meadow` as there is no historical need
 
-The dense mesh path is the only one that:
-- creates a local regular lattice from a bounding box
-- reconstructs topology with Delaunay
-- filters long perimeter edges afterward
+## 3. High-Level Strategy
+This should be done as a namespace-preserving package rename, not as a packaging redesign.
 
-That path is now redundant if DGGRID is the preferred default.
+That means:
+1. rename the package directory
+2. update all imports
+3. update packaging metadata
+4. update docs/examples/notebooks
+5. regenerate or update egg-info metadata
+6. run compile/import validation
 
-## 3. Target End State
-After the refactor:
-- `build_species_graphs(...)` defaults to `mesh_builder="dggrid"`
-- `build_dense_mesh_graph(...)` no longer exists
-- `mesh_builder="dense"` is no longer accepted
-- any dense-only helpers are deleted
-- all docs/examples/notebooks refer to DGGRID or geodesic, not dense
-- the package has exactly two internal shared-mesh backends:
-  - `dggrid`
-  - `geodesic`
-- plus the separate `input_graph` path
+## 4. Directory/Layout Changes
 
-## 4. Main Design Decisions
+## 4.1 Rename the package directory
+Current:
+- `src/meadow/`
 
-## 4.1 Keep backend selection explicit
-Do not remove the backend selector entirely.
+Target:
+- `src/meadow/`
 
-Recommendation:
-- keep `mesh_builder: str`
-- allowed values become:
-  - `"dggrid"`
-  - `"geodesic"`
+All files currently inside `src/meadow/` should move into `src/meadow/` unchanged unless import edits are required.
 
-Reason:
-- the geodesic builder is still useful as a pure-Python fallback or comparison mode
-- explicit mesh backend selection keeps the architecture clean
+Expected contents after move:
+- `src/meadow/__init__.py`
+- `src/meadow/climate.py`
+- `src/meadow/cv.py`
+- `src/meadow/data.py`
+- `src/meadow/graph.py`
+- `src/meadow/io.py`
+- `src/meadow/model.py`
+- `src/meadow/raster.py`
+- `src/meadow/train.py`
+- `src/meadow/utils.py`
+- `src/meadow/vcf_to_hdf5.py`
+- `src/meadow/viz.py`
 
-## 4.2 Make DGGRID the default
-Change the default signature in `build_species_graphs(...)` from:
-- `mesh_builder: str = "dense"`
+## 4.2 Remove the old package directory
+After the move, `src/meadow/` should no longer exist.
+
+No compatibility shim package should be left behind unless explicitly requested later.
+
+## 5. Import Refactor
+This is the main code-level change.
+
+## 5.1 Internal absolute imports
+All imports like:
+```python
+from meadow.graph import ...
+from meadow.data import ...
+```
+
+must become:
+```python
+from meadow.graph import ...
+from meadow.data import ...
+```
+
+This affects the source files under the renamed package.
+
+## 5.2 Search scope for import updates
+Search and replace across:
+- `src/meadow/*.py`
+- `examples/`
+- `notebooks/`
+- `README.md`
+- `docs/`
+- any generated package metadata that is tracked
+
+## 5.3 Avoid mixed namespace residue
+There should be no surviving runtime imports from `meadow`.
+
+Any mixed state where some modules import from `meadow` and some from `meadow` should be treated as a failed partial migration.
+
+## 6. Packaging Metadata Changes
+
+## 6.1 `pyproject.toml`
+File:
+- `pyproject.toml`
+
+Required changes:
+1. change `[project].name`
+2. ensure package discovery still works under `src/`
+
+### Naming recommendation
+Use:
+- distribution name: `meadow`
+
+unless you intentionally want a different install name from the import name.
+
+Current likely fields to update:
+- `name = "meadow"`
+- description text if it uses the old package identity
+- keywords if desired
+
+The `package-dir = {"" = "src"}` and package discovery under `src` can stay as-is.
+
+## 6.2 Egg-info metadata
+Current tracked metadata lives under:
+- `src/meadow.egg-info/`
+
+This needs special handling.
+
+### Recommended approach
+Because it is tracked, update or regenerate it so it matches the new package name.
+
+Likely changes:
+- rename egg-info directory if appropriate
+- update:
+  - `PKG-INFO`
+  - `SOURCES.txt`
+  - `top_level.txt`
+  - other generated metadata files if tracked
+
+### Important note
+If egg-info is meant to remain generated-only in the future, that is a separate cleanup decision. For this rename, the key requirement is simply that tracked metadata must not keep stale references to `meadow`.
+
+## 7. Public API Surface
+
+## 7.1 `__init__.py`
+File:
+- `src/meadow/__init__.py`
+
+This file should remain the public package surface, but with the new package path.
+
+The export list itself does not need conceptual redesign; only the package path changes.
+
+## 7.2 User-facing imports
+All user-facing docs/examples should move from:
+```python
+from meadow.train import build_species_graphs
+```
 
 to:
-- `mesh_builder: str = "dggrid"`
-
-That makes the preferred path the default without changing the overall function shape.
-
-## 4.3 Remove dense-mode compatibility completely
-Do not keep:
-- `mesh_builder="dense"`
-- deprecated aliasing from `dense` to `dggrid`
-- warning-based compatibility behavior
-
-If a caller still uses `mesh_builder="dense"`, it should fail with a direct `ValueError`.
-
-## 5. Code Changes by File
-
-## 5.1 `src/multispecies_resistance/train.py`
-This is the primary public API change.
-
-### Changes
-1. Change default:
 ```python
-mesh_builder: str = "dggrid"
+from meadow.train import build_species_graphs
 ```
 
-2. Restrict validation:
-```python
-if mesh_builder not in {"dggrid", "geodesic"}:
-    raise ValueError(...)
-```
+## 8. Documentation and Example Updates
 
-3. Remove the dense branch from backend dispatch.
-Current conceptual shape:
-```python
-if mesh_builder == "dense":
-    graph_fn = build_dense_mesh_graph
-elif mesh_builder == "geodesic":
-    graph_fn = build_geodesic_mesh_graph
-else:
-    graph_fn = build_dggrid_mesh_graph
-```
+## 8.1 README
+File:
+- `README.md`
 
-Target shape:
-```python
-if mesh_builder == "geodesic":
-    graph_fn = build_geodesic_mesh_graph
-elif mesh_builder == "dggrid":
-    graph_fn = build_dggrid_mesh_graph
-else:
-    raise ValueError(...)
-```
+Required updates:
+- package name references
+- code snippets
+- install/import examples
+- any prose describing `meadow`
 
-4. Preserve all downstream logic unchanged:
-- coastline masking
-- raster sampling
-- edge feature construction
-- sample-to-node assignment
-- support weighting
-- smoothing-neighbor construction
+## 8.2 MkDocs pages
+Files under:
+- `docs/`
 
-### Things to verify
-- no other code path assumes a `dense` default
-- no examples rely on omitting `mesh_builder` and then mentally expecting the old dense mesh
+Required updates:
+- code snippets
+- module references
+- package-qualified file/module names in prose
+- architecture or overview text referencing the old namespace
 
-## 5.2 `src/multispecies_resistance/graph.py`
-This is the main cleanup site.
+## 8.3 Notebooks
+Files under:
+- `notebooks/`
 
-### Remove the dense mesh builder
-Delete:
-- `build_dense_mesh_graph(...)`
+Required updates:
+- import cells
+- any explanatory text mentioning `meadow`
 
-### Remove dense-only helpers if truly unused
-Candidates to remove:
-- `grid_nodes_from_bbox(...)`
-- `_filter_long_mesh_edges(...)`
-- `build_delaunay_graph(...)`
+Notebook JSON validity must be rechecked after edits.
 
-These should be removed only if they are no longer referenced anywhere else after the refactor.
+## 8.4 Examples
+Files under:
+- `examples/`
 
-### Keep shared helpers still used by surviving backends
-Expected survivors:
-- `_coords_to_latlon(...)`
-- `_spacing_km_from_deg(...)`
-- `_resolve_bbox_spec(...)`
-- `_study_region_geometry(...)`
-- `_clip_graph_to_region(...)`
-- `_largest_connected_component(...)`
-- geodesic helpers
-- DGGRID helpers
-- coastline helpers
-- edge feature helpers
+Required updates:
+- `sys.path` usage if needed
+- imports from `meadow` to `meadow`
 
-### Specific dead-code audit requirement
-Before deleting helper functions, verify references across the repo.
-The implementation should explicitly check whether each of these is still used:
-- `build_delaunay_graph(...)`
-- `grid_nodes_from_bbox(...)`
-- `_filter_long_mesh_edges(...)`
+## 9. Files and Strings to Search For
+At minimum, search the repo for these strings and update them appropriately:
+- `meadow`
+- `meadow`
+- `src/meadow`
+- `meadow.egg-info`
 
-If any of them are used outside the dense builder, they must either:
-- remain, or
-- be refactored into the surviving caller appropriately
+Not every occurrence of `meadow` in prose must necessarily become `meadow`, but every packaging/import identity should.
+ - Flag any instances of `meadow` that are not changed in this process, by this i mean report them after the fact.
 
-The user explicitly wants unused pieces removed, so this dead-code audit is required.
+## 10. Non-Goals
+This rename should **not**:
+- flatten modules directly into `src/`
+- redesign the package architecture
+- change function signatures unless needed for import paths
+- add a compatibility alias package unless explicitly requested
 
-## 5.3 `src/multispecies_resistance/__init__.py`
-Update exports.
+## 11. Implementation Sequence
+1. Rename `src/meadow/` to `src/meadow/`.
+2. Update all source-file imports under `src/meadow/`.
+3. Update `pyproject.toml` project/package naming.
+4. Update tracked egg-info metadata under `src/*.egg-info`.
+5. Update examples, README, docs, and notebooks.
+6. Search for stale references to the old namespace.
+7. Run compile validation.
+8. Re-parse notebooks as JSON.
 
-### Remove exports
-If deleted from `graph.py`, also remove from package exports:
-- `build_dense_mesh_graph`
-- `build_delaunay_graph` if deleted
-
-### Keep exports
-- `build_dggrid_mesh_graph`
-- `build_geodesic_mesh_graph`
-
-This should reflect the simplified supported API.
-
-## 5.4 `README.md`
-Update the user-facing description of graph construction.
-
-### Required edits
-1. Replace references to “shared dense mesh” as the default.
-2. State clearly that the default shared mesh backend is DGGRID.
-3. Update any example calls or explanatory text that imply dense is the default.
-4. Update any “alternative mesh builder” language so it reflects the new hierarchy:
-- default: DGGRID
-- alternative: geodesic
-- provided graph: `input_graph`
-
-### Suggested wording direction
-- “By default, `build_species_graphs(...)` builds a shared triangular DGGRID mesh.”
-- “Set `mesh_builder="geodesic"` to use the geodesic fallback mesh instead.”
-
-## 5.5 `docs/train.md`
-Update the training docs.
-
-### Required edits
-- remove mention of dense as a supported backend
-- state that `mesh_builder` accepts only `"dggrid"` and `"geodesic"`
-- note that DGGRID is the default
-- update any references that describe the default path as a dense mesh
-
-## 5.6 `docs/graph.md`
-Update graph docs to reflect the new supported mesh builders.
-
-### Required edits
-- remove the section for `build_dense_mesh_graph(...)`
-- remove documentation for deleted dense-only helpers
-- keep or update documentation for any remaining reusable helper that survives the audit
-- keep the DGGRID and geodesic sections
-- make the DGGRID section clearly the primary shared mesh builder
-
-## 5.7 `docs/overview.md` and other docs pages
-Search and replace any statements that say:
-- shared dense mesh is the default
-- dense mesh is the standard path
-
-Update diagrams or overview text if they explicitly mention “dense mesh”.
-
-## 5.8 Notebooks and examples
-Update notebooks and example scripts to match the new semantics.
-
-### Required checks
-- examples that omit `mesh_builder` should still be valid, now implying DGGRID
-- examples that explicitly pass `mesh_builder="dense"` must be updated or removed
-- any narrative text referring to dense mesh should be rewritten
-
-Likely files to inspect:
-- `examples/minimal_prototype.py`
-- notebooks under `notebooks/`
-- any docs snippets mirrored in notebooks
-
-## 5.9 `environment.yml`
-Ensure DGGRID remains listed as a dependency.
-
-Since DGGRID becomes the default backend, this dependency is no longer optional in practice.
-
-## 6. Behavioral Checks After Refactor
-
-## 6.1 Public API behavior
-Confirm that:
-- `build_species_graphs(...)` with no `mesh_builder` argument uses DGGRID
-- `build_species_graphs(..., mesh_builder="geodesic")` still works
-- `build_species_graphs(..., mesh_builder="dense")` raises a hard error
-
-## 6.2 Structural checks
-Confirm that:
-- shared graph output still has `mesh_coords` / `edge_index` in the same shape conventions
-- coastline masking still works on DGGRID and geodesic outputs
-- raster sampling still operates on the surviving node coordinates
-- downstream training code is unchanged
-
-## 6.3 Dead-code cleanup checks
-Confirm that no deleted symbol is still referenced anywhere in the repo.
-At minimum search for:
-- `build_dense_mesh_graph`
-- `grid_nodes_from_bbox`
-- `_filter_long_mesh_edges`
-- `build_delaunay_graph`
-
-Any remaining reference must either be removed or justified by a surviving use.
-
-## 7. Implementation Sequence
-1. Update `build_species_graphs(...)` to make DGGRID the default and remove dense as an accepted backend.
-2. Remove `build_dense_mesh_graph(...)` from `graph.py`.
-3. Remove any helper that was only supporting the dense mesh path.
-4. Update package exports in `__init__.py`.
-5. Update docs and README.
-6. Update examples and notebooks.
-7. Run code search to confirm no stale references remain.
-8. Run compile and notebook JSON validation.
-
-## 8. Validation Plan
-At minimum:
-- `python -m py_compile src/multispecies_resistance/*.py examples/minimal_prototype.py`
+## 12. Validation Plan
+Minimum validation after implementation:
+- `python -m py_compile src/meadow/*.py examples/minimal_prototype.py`
 - notebook JSON parse check for all notebooks
-- repository-wide search for removed dense-mesh symbols
+- repo-wide search confirming no stale import references to `meadow`
 
-If the runtime environment supports it, also perform:
-- one smoke test with default DGGRID backend
-- one smoke test with `mesh_builder="geodesic"`
+If the environment supports it, also do:
+- one import smoke test such as:
+  - `from meadow.train import build_species_graphs`
+  - `from meadow.graph import SpeciesGraph`
 
-## 9. Non-Goals
-This refactor should not:
-- redesign the DGGRID builder itself
-- redesign geodesic mesh generation
-- change the graph feature schema
-- change training logic
-- preserve dense-mesh compatibility
-
-## 10. Expected Result
-After this refactor, the package has a simpler and more opinionated shared-mesh story:
-- default shared mesh: DGGRID
-- alternate shared mesh: geodesic
-- explicit custom graph: `input_graph`
-
-The local dense-lattice + Delaunay path is removed entirely, along with any helper code that existed only to support it.
+## 13. Expected Result
+After the rename, the project will have:
+- package/import name: `meadow`
+- standard `src/meadow/` layout
+- consistent internal and public imports
+- updated docs/examples/notebooks
+- no residual dependency on the old package namespace

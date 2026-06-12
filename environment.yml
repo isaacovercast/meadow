@@ -20,3 +20,4 @@ dependencies:
   - dggrid
   - mkdocs
   - mkdocs-material
+  - bump-my-version

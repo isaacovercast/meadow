@@ -7,8 +7,8 @@ import torch
 ROOT = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-from multispecies_resistance.data import SpeciesData
-from multispecies_resistance.train import build_species_graphs, train_model
+from meadow.data import SpeciesData
+from meadow.train import build_species_graphs, train_model
 
 
 torch.set_default_dtype(torch.float64)

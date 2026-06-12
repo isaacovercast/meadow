@@ -11,3 +11,5 @@ pykrige
 networkx
 mkdocs
 mkdocs-material
+h5py
+dggrid

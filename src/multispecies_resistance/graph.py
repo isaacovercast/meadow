@@ -966,6 +966,65 @@ def _largest_connected_component(
     return component_coords.astype(np.float64, copy=False), component_edges.astype(np.int64, copy=False)
 
 
+def _retain_components_with_samples(
+    mesh_coords: np.ndarray,
+    edge_index: np.ndarray,
+    sample_coords: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Retain every connected component that contains at least one sample-assigned node."""
+    from scipy.spatial import cKDTree
+
+    num_nodes = mesh_coords.shape[0]
+    if num_nodes == 0:
+        return mesh_coords, edge_index
+    if edge_index.size == 0:
+        raise ValueError("Graph has no edges.")
+
+    adjacency: list[list[int]] = [[] for _ in range(num_nodes)]
+    for u, v in np.asarray(edge_index, dtype=np.int64):
+        adjacency[int(u)].append(int(v))
+        adjacency[int(v)].append(int(u))
+
+    component_id = np.full(num_nodes, -1, dtype=np.int64)
+    cid = 0
+    for start in range(num_nodes):
+        if component_id[start] >= 0:
+            continue
+        stack = [start]
+        component_id[start] = cid
+        while stack:
+            node = stack.pop()
+            for nbr in adjacency[node]:
+                if component_id[nbr] < 0:
+                    component_id[nbr] = cid
+                    stack.append(nbr)
+        cid += 1
+
+    if sample_coords.size == 0:
+        return mesh_coords, edge_index
+
+    tree = cKDTree(mesh_coords)
+    _, sample_nodes = tree.query(sample_coords, k=1)
+    keep_components = np.unique(component_id[np.asarray(sample_nodes, dtype=np.int64)])
+    keep_mask = np.isin(component_id, keep_components)
+    keep_nodes = np.flatnonzero(keep_mask)
+    if keep_nodes.size == 0:
+        raise ValueError("No graph components contain assigned samples.")
+
+    old_to_new = np.full(num_nodes, -1, dtype=np.int64)
+    old_to_new[keep_nodes] = np.arange(keep_nodes.size, dtype=np.int64)
+
+    kept_coords = mesh_coords[keep_nodes]
+    edge_keep = keep_mask[edge_index[:, 0]] & keep_mask[edge_index[:, 1]]
+    kept_edges = old_to_new[edge_index[edge_keep]]
+    if kept_edges.size == 0:
+        raise ValueError("Sample-bearing graph components contain no edges.")
+
+    kept_edges = np.sort(kept_edges, axis=1)
+    kept_edges = np.unique(kept_edges, axis=0)
+    return kept_coords.astype(np.float64, copy=False), kept_edges.astype(np.int64, copy=False)
+
+
 def build_edge_neighbor_pairs(
     edge_index: np.ndarray,
     num_nodes: int,
@@ -1276,13 +1335,16 @@ def build_dggrid_mesh_graph(
         cells = gpd.read_file(output_path)
 
     mesh_coords, edge_index = _graph_from_cell_polygons(cells)
-    mesh_coords, edge_index = _clip_graph_to_region(mesh_coords, edge_index, region, region_crs)
     if mesh_coords.size == 0:
         raise ValueError(
             "DGGRID mesh generation produced zero nodes. Check bbox/buffer/grid spacing."
         )
 
-    mesh_coords, edge_index = _largest_connected_component(mesh_coords, edge_index)
+    mesh_coords, edge_index = _retain_components_with_samples(
+        mesh_coords,
+        edge_index,
+        all_coords_latlon,
+    )
     return mesh_coords, edge_index
 
 

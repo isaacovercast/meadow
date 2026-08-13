@@ -89,6 +89,13 @@ def load_species(
         except ValueError:
             # Try loading from a 3 column csv (id,lat,lon)
             coords_df = pd.read_csv(coord_path, header=None, index_col=0)
+
+            # Check for and allow the coords file to have a header
+            tmp_coords = pd.to_numeric(coords_df.iloc[0, 1:], errors="coerce")
+            if tmp_coords.isna().any():
+                # If we are here then column dtype is obj, so cast to float
+                coords_df = coords_df.iloc[1:].astype(float)
+
             sample_coords = coords_df.values
             # Retain sample names in coords file order
             sample_names = list(coords_df.index)

@@ -24,7 +24,7 @@ class VCFtoHDF5(object):
         data,
         name="test",
         workdir="./analysis-vcf2hdf5",
-        ld_block_size=None,
+        ld_block_size=10000,
         quiet=False,
         ):
 
@@ -142,7 +142,7 @@ class VCFtoHDF5(object):
         infile.close()
 
         # convert chroms into a factorized list
-        self._print("VCF: {} SNPs; {} scaffolds".format(self.nsnps, len(chroms)))        
+        self._print("VCF: {} Samples; {} SNPs; {} scaffolds".format(self.nsamples, self.nsnps, len(chroms)))
 
 
     def init_database(self):

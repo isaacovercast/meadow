@@ -130,6 +130,19 @@ def load_species(
                 idx_map = {name: i for i, name in enumerate(sample_names)}
                 # Get genos row indices in target order
                 hnames = io5["snps"].attrs["names"]
+
+                # Verify hnames and sample_names agree
+                missing_coords = sorted(set(hnames) - set(sample_names))
+                missing_vcf = sorted(set(sample_names) - set(hnames))
+
+                if missing_coords or missing_vcf:
+                    raise ValueError(
+                        f"Sample names differ for species '{name}'. "
+                        f"\n  {len(missing_coords)} VCF sample(s) missing from coords: {missing_coords[:10]}; "
+                        f"\n  {len(missing_vcf)} coords sample(s) missing from VCF: {missing_vcf[:10]}. "
+                        "\nMake the coords file and VCF use the same sample IDs, or filter both to their intersection."
+                    )
+
                 reorder_idx = [idx_map[name] for name in hnames]
                 # Reorder genos array
                 genos = genos[reorder_idx]

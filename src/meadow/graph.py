@@ -862,7 +862,10 @@ def _study_region_geometry(
     else:
         if bbox_file is None:
             raise ValueError("bbox_file is required when bbox='polygon'")
-        poly_coords = np.loadtxt(bbox_file)
+        try:
+            poly_coords = np.loadtxt(bbox_file, encoding="utf-8-sig")
+        except ValueError as err:
+            raise Exception("malformed bbox_file. Remove header line from bbox_file")
         if poly_coords.ndim != 2 or poly_coords.shape[1] != 2:
             raise ValueError("bbox_file must contain two columns (lat lon)")
         if not np.allclose(poly_coords[0], poly_coords[-1]):

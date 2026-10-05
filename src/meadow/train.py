@@ -131,6 +131,7 @@ def build_species_graphs(
     mesh_spacing_deg: float | None = None,
     mesh_grid_type: str = "triangular",
     mesh_env: np.ndarray | None = None,
+    include_coord_midpoint: bool = False,
     buffer_km: float | None = None,
     bbox: str | None = "convex_hull",
     bbox_file: str | None = None,
@@ -155,7 +156,9 @@ def build_species_graphs(
     `mesh_spacing_km` is `None`, a spacing is chosen automatically from
     nearest-neighbor sample distances.
     Environmental covariates are sampled at graph nodes when raster inputs are
-    provided. Graph nodes can optionally be masked to land or marine locations
+    provided. Set `include_coord_midpoint=True` to add graph-edge midpoint
+    coordinates as additional edge features. Graph nodes can optionally be
+    masked to land or marine locations
     before sample assignment. Optional support attenuation weights can also be
     precomputed from graph distance to occupied nodes; setting
     `support_decay_km=None` disables this behavior.
@@ -225,9 +228,16 @@ def build_species_graphs(
                     lat = float(data["y"])
                     lon = float(data["x"])
                 elif "pos" in data:
-                    lonlat = np.fromstring(data["pos"].strip('[]'), sep=' ')
-                    lon = lonlat[0]
-                    lat = lonlat[1]
+                    try:
+                        # Handle the gml format of the pedicularis example nx gml
+                        lonlat = np.fromstring(data["pos"].strip('[]'), sep=' ')
+                        lon = lonlat[0]
+                        lat = lonlat[1]
+                    except AttributeError:
+                        # Handle FEEMS-style simulated graphs generated with the
+                        # sim.py script in examples/Simulations.
+                        lon = data["pos"][0]
+                        lat = data["pos"][1]
                 else:
                     raise ValueError("GML nodes must have (lat, lon) or (x, y) attributes.")
                 node_coords.append([lat, lon])
@@ -259,7 +269,12 @@ def build_species_graphs(
             else:
                 node_env = np.zeros((node_coords.shape[0], 0), dtype=np.float64)
 
-            shared_edge_features = edge_features(node_coords, node_env, edge_index)
+            shared_edge_features = edge_features(
+                node_coords,
+                node_env,
+                edge_index,
+                include_coord_midpoint=include_coord_midpoint,
+            )
             edge_nbr_i, edge_nbr_j = build_edge_neighbor_pairs(edge_index, node_coords.shape[0])
             tree = cKDTree(node_coords)
 
@@ -364,7 +379,12 @@ def build_species_graphs(
             else:
                 node_env = np.zeros((mesh_coords.shape[0], 0), dtype=np.float64)
 
-            shared_edge_features = edge_features(mesh_coords, node_env, edge_index)
+            shared_edge_features = edge_features(
+                mesh_coords,
+                node_env,
+                edge_index,
+                include_coord_midpoint=include_coord_midpoint,
+            )
             edge_nbr_i, edge_nbr_j = build_edge_neighbor_pairs(edge_index, mesh_coords.shape[0])
             tree = cKDTree(mesh_coords)
 

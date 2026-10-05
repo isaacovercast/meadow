@@ -1355,6 +1355,7 @@ def edge_features(
     site_coords: np.ndarray,
     site_env: np.ndarray,
     edge_index: np.ndarray,
+    include_coord_midpoint: bool = False,
 ) -> np.ndarray:
     """Compute edge features from geodesic length and environmental differences.
 
@@ -1366,16 +1367,24 @@ def edge_features(
         `S x K` site covariates, or empty array for no covariates.
     edge_index : np.ndarray
         `E x 2` edge list indexing site rows.
+    include_coord_midpoint : bool, optional
+        If `True`, append edge midpoint coordinates from `site_coords`.
 
     Returns
     -------
     np.ndarray
-        `E x (1+K)` matrix with distance in column 0 and absolute env diffs after.
+        Edge feature matrix with distance in column 0, optional coordinate
+        midpoint columns, then environmental midpoints and absolute diffs.
     """
     a = site_coords[edge_index[:, 0]]
     b = site_coords[edge_index[:, 1]]
 
     geo_dist = haversine_km(a, b)[:, None]
+    coord_mid = (
+        0.5 * (a + b)
+        if include_coord_midpoint
+        else np.zeros((edge_index.shape[0], 0), dtype=np.float64)
+    )
     if site_env is None or site_env.size == 0:
         env_diff = np.zeros((edge_index.shape[0], 0), dtype=np.float64)
         env_mid = np.zeros((edge_index.shape[0], 0), dtype=np.float64)
@@ -1383,7 +1392,7 @@ def edge_features(
         env_diff = np.abs(site_env[edge_index[:, 0]] - site_env[edge_index[:, 1]])
         env_mid = 0.5 * (site_env[edge_index[:, 0]] + site_env[edge_index[:, 1]])
 
-    feats = np.concatenate([geo_dist, env_mid, env_diff], axis=1)
+    feats = np.concatenate([geo_dist, coord_mid, env_mid, env_diff], axis=1)
     return feats.astype(np.float64)
 
 

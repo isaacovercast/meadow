@@ -289,10 +289,15 @@ def plot_species_resistance(
     if basemap is not None and basemap is not False:
 
         if basemap is True:
-            basemap_source = ctx.providers.CartoDB.Positron
+            basemap_source = ctx.providers.USGS.USTopo
         else:
             basemap_source = basemap
-        ctx.add_basemap(ax, source=basemap_source, crs=basemap_crs, reset_extent=False)
+        ctx.add_basemap(ax,
+                        source=basemap_source,
+                        crs=basemap_crs,
+                        attribution_size=5,
+                        headers={"User-Agent": "Meadow/1.0"},
+                        reset_extent=False)
         if xlim is not None and ylim is not None:
             ax.set_xlim(*xlim)
             ax.set_ylim(*ylim)
@@ -495,10 +500,15 @@ def plot_multi_edge_resistance(
             import contextily as ctx
 
             if basemap is True:
-                basemap_source = ctx.providers.CartoDB.Positron
+                basemap_source = ctx.providers.USGS.USTopo
             else:
                 basemap_source = basemap
-            ctx.add_basemap(ax, source=basemap_source, crs=basemap_crs, reset_extent=False)
+            ctx.add_basemap(ax,
+                            source=basemap_source,
+                            crs=basemap_crs,
+                            attribution_size=5,
+                            headers={"User-Agent": "Meadow/1.0"},
+                            reset_extent=False)
             if show_sites and xs_all and ys_all:
                 ax.set_xlim(*xlim)
                 ax.set_ylim(*ylim)

@@ -98,7 +98,7 @@ class SpeciesGraph:
         ax : matplotlib.axes.Axes | None, optional
             Existing axis to draw on. A new one is created when omitted.
         basemap : bool | object, optional
-            `True` uses CartoDB Positron, `False` disables basemap, or provide a
+            `True` uses USGS USTopo, `False` disables basemap, or provide a
             contextily tile provider object.
         basemap_crs : str, optional
             CRS used when rendering with basemap tiles.
@@ -264,8 +264,13 @@ class SpeciesGraph:
                     "Install with `conda install -c conda-forge contextily` "
                     "or disable basemap with basemap=False."
                 ) from exc
-            basemap_source = ctx.providers.CartoDB.Positron if basemap is True else basemap
-            ctx.add_basemap(ax, source=basemap_source, crs=basemap_crs, reset_extent=False)
+            basemap_source = ctx.providers.USGS.USTopo if basemap is True else basemap
+            ctx.add_basemap(ax,
+                            source=basemap_source,
+                            crs=basemap_crs,
+                            attribution_size=5,
+                            headers={"User-Agent": "Meadow/1.0"},
+                            reset_extent=False)
             ax.set_xlim(x_min, x_max)
             ax.set_ylim(y_min, y_max)
 

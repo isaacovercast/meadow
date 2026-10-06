@@ -150,6 +150,8 @@ def plot_species_resistance(
     edge_features: np.ndarray | None = None,
     species_idx: int = 0,
     show_sites: bool = False,
+    show_support_decay: bool = False,
+    edge_support_weight: np.ndarray | None = None,
     sample_coords: np.ndarray | None = None,
     value_label: str = "Edge resistance",
     figsize: tuple = (6, 5),
@@ -191,6 +193,10 @@ def plot_species_resistance(
         Species index used with `model`.
     show_sites : bool, optional
         Whether to overlay sample/site points.
+    show_support_decay : bool, optional
+        Whether to attenuate plotted edge alpha by per-edge support weights.
+    edge_support_weight : np.ndarray | None, optional
+        Per-edge support weights used when `show_support_decay=True`.
     sample_coords : np.ndarray | None, optional
         Coordinates to plot when `show_sites=True`; defaults to `site_coords`.
     value_label : str, optional
@@ -240,6 +246,16 @@ def plot_species_resistance(
         edge_values, _, _ = model.edge_resistance(species_idx, edge_feat)
         edge_values = edge_values.detach().numpy()
 
+    edge_support = None
+    if show_support_decay:
+        if edge_support_weight is None:
+            raise ValueError(
+                "show_support_decay=True requires edge_support_weight."
+            )
+        edge_support = np.asarray(edge_support_weight, dtype=float)
+        if edge_support.shape[0] != edge_index.shape[0]:
+            raise ValueError("edge_support_weight length must equal edge_index row count.")
+
     segments = []
     for i, j in edge_index:
         segments.append([(x[i], y[i]), (x[j], y[j])])
@@ -247,6 +263,8 @@ def plot_species_resistance(
     lc = LineCollection(segments, cmap=cmap, alpha=alpha)
     lc.set_array(edge_values)
     lc.set_linewidth(1.0)
+    if edge_support is not None:
+        lc.set_alpha(alpha * edge_support)
     ax.add_collection(lc)
     ax.autoscale()
     ax.set_xlabel("Longitude" if basemap is None or basemap is False else "X")
@@ -289,7 +307,7 @@ def plot_species_resistance(
     if basemap is not None and basemap is not False:
 
         if basemap is True:
-            basemap_source = ctx.providers.USGS.USTopo
+            basemap_source = ctx.providers.Esri.WorldGrayCanvas
         else:
             basemap_source = basemap
         ctx.add_basemap(ax,
@@ -304,7 +322,14 @@ def plot_species_resistance(
 
     crs = basemap_crs if basemap is not None and basemap is not False else coords_crs
     gdf = gpd.GeoDataFrame(
-        {"edge_value": np.asarray(edge_values)},
+        {
+            "edge_value": np.asarray(edge_values),
+            "edge_support_weight": (
+                edge_support
+                if edge_support is not None
+                else np.full(edge_index.shape[0], np.nan, dtype=float)
+            ),
+        },
         geometry=[LineString(seg) for seg in segments],
         crs=crs,
     )
@@ -336,6 +361,8 @@ def plot_multi_edge_resistance(
     overlay_stat: str = "mean",
     combine_with_shared: bool = True,
     show_sites: bool = False,
+    show_support_decay: bool = False,
+    support_decay_km: float | None = None,
     sample_coords_list: list[np.ndarray] | None = None,
     ncols: int = 2,
     figsize: tuple[int, int] = (6, 5),
@@ -378,6 +405,11 @@ def plot_multi_edge_resistance(
         species-specific logit component.
     show_sites : bool, optional
         Whether to overlay sample/site points.
+    show_support_decay : bool, optional
+        Whether to attenuate plotted edge alpha by per-edge support weights.
+    support_decay_km : float | None, optional
+        Plot-time support decay scale. When omitted, existing graph
+        `edge_support_weight` values are used.
     sample_coords_list : list[np.ndarray] | None, optional
         Per-species coordinate overrides for plotted points.
     ncols : int, optional
@@ -429,11 +461,37 @@ def plot_multi_edge_resistance(
             _, edge_values = model.edge_logits(species_idx, edge_feat)
         return edge_values.detach().numpy()
 
+    def _support_weights_for_graph(graph) -> np.ndarray | None:
+        if not show_support_decay:
+            return None
+        if support_decay_km is None:
+            if graph.edge_support_weight is None:
+                raise ValueError(
+                    "show_support_decay=True requires graph.edge_support_weight "
+                    "or a plot-time support_decay_km."
+                )
+            weights = np.asarray(graph.edge_support_weight, dtype=float)
+        else:
+            from meadow.graph import compute_edge_support_weight
+
+            occupied_nodes = np.unique(np.concatenate([graph.pair_i, graph.pair_j]))
+            weights = compute_edge_support_weight(
+                graph.node_coords,
+                graph.edge_index,
+                occupied_nodes,
+                support_decay_km=support_decay_km,
+                support_floor=0.01,
+            )
+        if weights.shape[0] != graph.edge_index.shape[0]:
+            raise ValueError("edge_support_weight length must equal edge_index row count.")
+        return weights
+
     colorbar_label = "Edge resistance" if combine_with_shared else "Species-specific edge logit"
 
     if overlay:
         fig, ax = plt.subplots(figsize=figsize)
         values_by_species = []
+        support_by_species = []
         xs_all = []
         ys_all = []
 
@@ -451,11 +509,17 @@ def plot_multi_edge_resistance(
 
         for idx, (sp, g) in enumerate(zip(species_list, graphs)):
             values_by_species.append(_edge_values_for_species(idx, g))
+            support = _support_weights_for_graph(g)
+            if support is not None:
+                support_by_species.append(support)
             x, y, crs = _coords_for_plot(g.node_coords)
             xs_all.append(x)
             ys_all.append(y)
 
         values_by_species = np.vstack(values_by_species)
+        support_all = None
+        if support_by_species:
+            support_all = np.vstack(support_by_species).mean(axis=0)
         stat = overlay_stat.lower()
         if stat == "mean":
             values_all = values_by_species.mean(axis=0)
@@ -469,9 +533,11 @@ def plot_multi_edge_resistance(
         for i, j in base_graph.edge_index:
             segments_all.append([(x_base[i], y_base[i]), (x_base[j], y_base[j])])
 
-        lc = LineCollection(segments_all, cmap=cmap)
+        lc = LineCollection(segments_all, cmap=cmap, alpha=alpha)
         lc.set_array(values_all)
         lc.set_linewidth(2.0)
+        if support_all is not None:
+            lc.set_alpha(alpha * support_all)
         ax.add_collection(lc)
         ax.autoscale()
         ax.set_xlabel("Longitude" if basemap is None or basemap is False else "X")
@@ -500,7 +566,7 @@ def plot_multi_edge_resistance(
             import contextily as ctx
 
             if basemap is True:
-                basemap_source = ctx.providers.USGS.USTopo
+                basemap_source = ctx.providers.Esri.WorldGrayCanvas
             else:
                 basemap_source = basemap
             ctx.add_basemap(ax,
@@ -526,6 +592,11 @@ def plot_multi_edge_resistance(
         gdf = gpd.GeoDataFrame(
             {
                 "edge_value": values_all,
+                "edge_support_weight": (
+                    support_all
+                    if support_all is not None
+                    else np.full(base_graph.edge_index.shape[0], np.nan, dtype=float)
+                ),
                 "overlay_stat": stat,
                 "n_species": len(species_list),
             },
@@ -550,6 +621,7 @@ def plot_multi_edge_resistance(
 
     for idx, (sp, g) in enumerate(zip(species_list, graphs)):
         edge_values = _edge_values_for_species(idx, g)
+        edge_support = _support_weights_for_graph(g)
 
         ax_i = axes_arr[idx]
         coords_plot = (
@@ -569,6 +641,8 @@ def plot_multi_edge_resistance(
             explore=explore,
             explore_kwargs=explore_kwargs,
             show_sites=show_sites,
+            show_support_decay=show_support_decay,
+            edge_support_weight=edge_support,
             sample_coords=coords_plot if show_sites else None,
             value_label=colorbar_label,
         )
@@ -620,6 +694,8 @@ def plot_shared_resistance(
     rbf_kwargs: dict | None = None,
     kriging_kwargs: dict | None = None,
     show_sites: bool = False,
+    show_support_decay: bool = False,
+    support_decay_km: float | None = None,
     figsize: tuple = (6,5),
     outfile: str | None = None,
 ):
@@ -669,6 +745,11 @@ def plot_shared_resistance(
         Extra kwargs for `pykrige.ok.OrdinaryKriging`.
     show_sites : bool, optional
         Whether to overlay site points.
+    show_support_decay : bool, optional
+        Whether to attenuate plotted edge alpha by per-edge support weights.
+    support_decay_km : float | None, optional
+        Plot-time support decay scale. When omitted, existing graph
+        `edge_support_weight` values are used.
 
     Returns
     -------
@@ -690,6 +771,32 @@ def plot_shared_resistance(
     shared_logits = model.shared(edge_feat).squeeze(-1)
     edge_resistance = (torch.nn.functional.softplus(shared_logits) + 1e-4).detach().numpy()
 
+    edge_support = None
+    if show_support_decay:
+        if support_decay_km is None:
+            if g.edge_support_weight is None:
+                raise ValueError(
+                    "show_support_decay=True requires graph.edge_support_weight "
+                    "or a plot-time support_decay_km."
+                )
+            edge_support = np.asarray(g.edge_support_weight, dtype=float)
+        else:
+            from meadow.graph import compute_edge_support_weight
+
+            occupied_nodes = np.unique(np.concatenate([g.pair_i, g.pair_j]))
+            edge_support = compute_edge_support_weight(
+                g.node_coords,
+                g.edge_index,
+                occupied_nodes,
+                support_decay_km=support_decay_km,
+                support_floor=0.01,
+            )
+        if edge_support.shape[0] != g.edge_index.shape[0]:
+            raise ValueError("edge_support_weight length must equal edge_index row count.")
+
+    if rasterize and show_support_decay:
+        raise ValueError("show_support_decay is only supported when rasterize=False.")
+
     if not rasterize:
         return plot_species_resistance(
             g.node_coords,
@@ -703,6 +810,8 @@ def plot_shared_resistance(
             explore=explore,
             explore_kwargs=explore_kwargs,
             show_sites=show_sites,
+            show_support_decay=show_support_decay,
+            edge_support_weight=edge_support,
             sample_coords=sp.sample_coords if show_sites else None,
             alpha=alpha,
             figsize=figsize,

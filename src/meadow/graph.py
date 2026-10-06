@@ -86,6 +86,8 @@ class SpeciesGraph:
         edge_alpha: float = 0.9,
         edge_color: str = "#1f77b4",
         add_colorbar: bool = True,
+        show_support_decay: bool = False,
+        support_decay_km: float | None = None,
         title: str | None = None,
     ):
         """Plot graph edges with optional edge-feature coloring and sample overlay.
@@ -98,7 +100,7 @@ class SpeciesGraph:
         ax : matplotlib.axes.Axes | None, optional
             Existing axis to draw on. A new one is created when omitted.
         basemap : bool | object, optional
-            `True` uses USGS USTopo, `False` disables basemap, or provide a
+            `True` uses Esri.WorldGrayCanvas, `False` disables basemap, or provide a
             contextily tile provider object.
         basemap_crs : str, optional
             CRS used when rendering with basemap tiles.
@@ -122,6 +124,11 @@ class SpeciesGraph:
             Constant edge color used when `edge_feature_idx=None`.
         add_colorbar : bool, optional
             Whether to add a colorbar when feature coloring is enabled.
+        show_support_decay : bool, optional
+            Whether to attenuate plotted edge alpha by per-edge support weights.
+        support_decay_km : float | None, optional
+            Plot-time support decay scale. When omitted, existing
+            `edge_support_weight` values are used.
         title : str | None, optional
             Optional plot title; defaults to species name.
 
@@ -139,6 +146,7 @@ class SpeciesGraph:
         sample_coords = np.asarray(self.sample_coords, dtype=np.float64)
         edge_index = np.asarray(self.edge_index, dtype=np.int64)
         edge_features = np.asarray(self.edge_features, dtype=np.float64)
+        edge_support_weight = None
 
         if node_coords.ndim != 2 or node_coords.shape[1] != 2:
             raise ValueError("node_coords must have shape (N, 2).")
@@ -154,6 +162,25 @@ class SpeciesGraph:
             raise ValueError("coord_order must be 'latlon' or 'lonlat'.")
         if node_coords.shape[0] == 0:
             raise ValueError("node_coords is empty.")
+        if show_support_decay:
+            if support_decay_km is None:
+                if self.edge_support_weight is None:
+                    raise ValueError(
+                        "show_support_decay=True requires graph.edge_support_weight "
+                        "or a plot-time support_decay_km."
+                    )
+                edge_support_weight = np.asarray(self.edge_support_weight, dtype=np.float64)
+            else:
+                occupied_nodes = np.unique(np.concatenate([self.pair_i, self.pair_j]))
+                edge_support_weight = compute_edge_support_weight(
+                    node_coords,
+                    edge_index,
+                    occupied_nodes,
+                    support_decay_km=support_decay_km,
+                    support_floor=0.01,
+                )
+            if edge_support_weight.shape[0] != edge_index.shape[0]:
+                raise ValueError("edge_support_weight length must equal edge_index row count.")
 
         if ax is None:
             _, ax = plt.subplots(figsize=(6, 5))
@@ -223,6 +250,8 @@ class SpeciesGraph:
                 alpha=edge_alpha,
             )
             line_collection.set_array(edge_values)
+        if edge_support_weight is not None:
+            line_collection.set_alpha(edge_alpha * edge_support_weight)
 
         ax.add_collection(line_collection)
         if sample_coords.shape[0] > 0:
@@ -264,7 +293,7 @@ class SpeciesGraph:
                     "Install with `conda install -c conda-forge contextily` "
                     "or disable basemap with basemap=False."
                 ) from exc
-            basemap_source = ctx.providers.USGS.USTopo if basemap is True else basemap
+            basemap_source = ctx.providers.Esri.WorldGrayCanvas if basemap is True else basemap
             ctx.add_basemap(ax,
                             source=basemap_source,
                             crs=basemap_crs,
@@ -280,6 +309,11 @@ class SpeciesGraph:
                 "v": edge_index[:, 1],
                 "edge_feature_idx": edge_feature_col,
                 "edge_value": edge_values,
+                "edge_support_weight": (
+                    edge_support_weight
+                    if edge_support_weight is not None
+                    else np.full(edge_index.shape[0], np.nan, dtype=np.float64)
+                ),
             },
             geometry=[LineString(seg) for seg in segments],
             crs=plot_crs,

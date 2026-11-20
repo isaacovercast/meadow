@@ -41,6 +41,7 @@ def load_species(
     coords_order: str,
     species_names: Iterable[str] | None = None,
     mmap_mode: str | None = None,
+    verbose: bool = False,
 ) -> List[SpeciesData]:
     """Load FEEMS-style species as sample-level records.
 
@@ -72,7 +73,9 @@ def load_species(
         species_names = list(species_names)
 
     species_list: List[SpeciesData] = []
+    if verbose: print("Importing genos/coords for all species")
     for name in species_names:
+        if verbose: print(f"  Processing {name}")
         # Find the coords file for this sample, load and validate coords
         coord_path = root / f"{name}_coords.txt"
         if not coord_path.exists():
@@ -89,6 +92,8 @@ def load_species(
         except ValueError:
             # Try loading from a 3 column csv (id,lat,lon)
             coords_df = pd.read_csv(coord_path, header=None, index_col=0, sep=r"\s+")
+            # Cast index to str to allow for integer sample names
+            coords_df.index = coords_df.index.astype("string")
 
             # Check for and allow the coords file to have a header
             tmp_coords = pd.to_numeric(coords_df.iloc[0, 1:], errors="coerce")
@@ -127,9 +132,7 @@ def load_species(
                 genos[genos == 18] = 9
                 # import pdb; pdb.set_trace()
                 # Remove any SNPs with no data
-                print(genos.shape)
                 genos = genos[:, ~np.all(genos == 9, axis=0)]
-                print(genos.shape)
 
                 # Impute missing values
                 imp = SimpleImputer(missing_values=9, strategy="most_frequent")

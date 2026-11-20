@@ -88,7 +88,7 @@ def load_species(
                 raise ValueError(f"Invalid coords file for species '{name}'")
         except ValueError:
             # Try loading from a 3 column csv (id,lat,lon)
-            coords_df = pd.read_csv(coord_path, header=None, index_col=0)
+            coords_df = pd.read_csv(coord_path, header=None, index_col=0, sep=r"\s+")
 
             # Check for and allow the coords file to have a header
             tmp_coords = pd.to_numeric(coords_df.iloc[0, 1:], errors="coerce")
@@ -109,18 +109,27 @@ def load_species(
 
         geno_path = root / f"{name}_genos.npy"
         if not geno_path.exists():
-            # Try loading and converting a vcf file
-            vcf_path = root / f"{name}.vcf"
-            if not vcf_path.exists():
-                raise FileNotFoundError(f"No genos or vcf found: {geno_path} / {vcf_path}")
-            print(f"Converting vcf to hdf5 for - {name}")
-            v2h = VCFtoHDF5(str(vcf_path), vcf_path.stem)
-            v2h.run(force=True)
+            # If hdf5 exists, don't re-run vcf2hdf5 conversion
+            hdf5_path = root / f"{name}.snps.hdf5"
+            if not hdf5_path:
+                # Try loading and converting a vcf file
+                vcf_path = root / f"{name}.vcf"
+                if not vcf_path.exists():
+                    raise FileNotFoundError(f"No genos or vcf found: {geno_path} / {vcf_path}")
+                print(f"Converting vcf to hdf5 for - {name}")
+                v2h = VCFtoHDF5(str(vcf_path), vcf_path.stem)
+                v2h.run(force=True)
+                hdf5_path = f"analysis-vcf2hdf5/{vcf_path.stem}.snps.hdf5"
 
             # Pull the snps out of the hdf5 and write to a np array
-            with h5py.File(f"analysis-vcf2hdf5/{vcf_path.stem}.snps.hdf5") as io5:
+            with h5py.File(hdf5_path) as io5:
                 genos = io5["genos"][:].sum(axis=2).T
                 genos[genos == 18] = 9
+                # import pdb; pdb.set_trace()
+                # Remove any SNPs with no data
+                print(genos.shape)
+                genos = genos[:, ~np.all(genos == 9, axis=0)]
+                print(genos.shape)
 
                 # Impute missing values
                 imp = SimpleImputer(missing_values=9, strategy="most_frequent")

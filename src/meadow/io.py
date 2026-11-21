@@ -105,6 +105,8 @@ def load_species(
             # Retain sample names in coords file order
             sample_names = list(coords_df.index)
 
+        if verbose: print(f"    nsamples: {len(sample_coords)}")
+
         # Force the user to choose orientation of georeference data
         if coords_order not in ["latlon", "lonlat"]:
             raise ValueError(f"`coords_order` must be one of 'latlon' or 'lonlat'")

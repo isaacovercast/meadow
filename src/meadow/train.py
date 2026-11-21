@@ -61,6 +61,9 @@ def _sample_node_env(
 ) -> np.ndarray:
     if raster_stack is None:
         return np.zeros((num_nodes, 0), dtype=np.float64)
+    # Mesh geometry already includes the requested study-region buffer.
+    # Restrict filling to that extent before indexing valid raster pixels.
+    raster_stack.crop_to_points(node_coords)
     node_env, _ = raster_stack.sample_points(node_coords)
     return node_env
 
@@ -140,7 +143,7 @@ def build_species_graphs(
     raster_root: str | Path | None = None,
     raster_pattern: str = "*.tif",
     raster_recursive: bool = True,
-    raster_fill_method: str = "nan",
+    raster_fill_method: str = "nearest",
     raster_coord_order: str = "latlon",
     raster_coords_crs: str = "EPSG:4326",
     mesh_builder: str = "dggrid",
@@ -156,7 +159,10 @@ def build_species_graphs(
     `mesh_spacing_km` is `None`, a spacing is chosen automatically from
     nearest-neighbor sample distances.
     Environmental covariates are sampled at graph nodes when raster inputs are
-    provided. Set `include_coord_midpoint=True` to add graph-edge midpoint
+    provided. Raster fill indexes are automatically restricted to the final
+    mesh extent plus a 32-pixel margin in each raster; nearest searches expand
+    when necessary to preserve the full-raster nearest-pixel result.
+    Set `include_coord_midpoint=True` to add graph-edge midpoint
     coordinates as additional edge features. Graph nodes can optionally be
     masked to land or marine locations
     before sample assignment. Optional support attenuation weights can also be

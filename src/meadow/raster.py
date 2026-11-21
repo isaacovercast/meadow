@@ -7,6 +7,7 @@ import numpy as np
 import rasterio
 from rasterio.crs import CRS
 from rasterio.warp import transform
+from rasterio.windows import Window
 from scipy.spatial import cKDTree
 
 
@@ -80,6 +81,8 @@ def _band_names(src: rasterio.DatasetReader) -> List[str]:
     ----------
     src : rasterio.DatasetReader
         Open raster dataset.
+    window : Window | None, optional
+        Regional window; `None` reads the full raster.
 
     Returns
     -------
@@ -113,7 +116,10 @@ def _sample_raw(
         Sampled values (`N x B`) and optional missing-value mask.
     """
     try:
-        samples = np.array(list(src.sample(zip(xs, ys), masked=True)))
+        # Preserve per-band masks and allow NaN fills for integer rasters.
+        samples = np.ma.vstack(list(src.sample(zip(xs, ys), masked=True))).astype(
+            np.float64
+        )
         mask = np.ma.getmaskarray(samples)
         data = np.ma.filled(samples, np.nan).astype(np.float64)
         return data, mask
@@ -126,7 +132,9 @@ def _sample_raw(
         return samples, mask
 
 
-def _band_means(src: rasterio.DatasetReader) -> np.ndarray:
+def _band_means(
+    src: rasterio.DatasetReader, window: Window | None = None
+) -> np.ndarray:
     """Compute per-band means while respecting raster masks.
 
     Parameters
@@ -141,7 +149,7 @@ def _band_means(src: rasterio.DatasetReader) -> np.ndarray:
     """
     means = []
     for b in range(1, src.count + 1):
-        data = src.read(b, masked=True)
+        data = src.read(b, masked=True, window=window)
         if np.ma.is_masked(data):
             mean_val = float(data.mean())
         else:
@@ -150,37 +158,75 @@ def _band_means(src: rasterio.DatasetReader) -> np.ndarray:
     return np.array(means, dtype=np.float64)
 
 
-def _build_kdtree(src: rasterio.DatasetReader, band: int):
-    """Build a KD-tree over valid pixels for one raster band.
+def _point_window(
+    src: rasterio.DatasetReader,
+    xs: np.ndarray,
+    ys: np.ndarray,
+    padding_pixels: int,
+) -> Window:
+    """Enclose query pixels and a margin, clipped to the raster extent."""
+    cols, rows = ~src.transform * (xs, ys)
+    col0 = int(np.clip(np.floor(np.min(cols)), 0, src.width - 1))
+    col1 = int(np.clip(np.floor(np.max(cols)) + 1, 1, src.width))
+    row0 = int(np.clip(np.floor(np.min(rows)), 0, src.height - 1))
+    row1 = int(np.clip(np.floor(np.max(rows)) + 1, 1, src.height))
+    col0, row0 = max(0, col0 - padding_pixels), max(0, row0 - padding_pixels)
+    col1 = min(src.width, col1 + padding_pixels)
+    row1 = min(src.height, row1 + padding_pixels)
+    return Window(col0, row0, col1 - col0, row1 - row0)
 
-    Parameters
-    ----------
-    src : rasterio.DatasetReader
-        Open raster dataset.
-    band : int
-        One-based band index.
 
-    Returns
-    -------
-    tuple
-        `(tree, values)` where `tree` is a KD-tree over valid cell centers and
-        `values` are corresponding pixel values, or `(None, None)` if no valid cells.
+def _expand_window(src: rasterio.DatasetReader, window: Window) -> Window:
+    """Grow a regional search geometrically until it reaches raster bounds."""
+    pad_x = max(32, int(np.ceil(window.width / 2)))
+    pad_y = max(32, int(np.ceil(window.height / 2)))
+    col0, row0 = max(0, window.col_off - pad_x), max(0, window.row_off - pad_y)
+    col1 = min(src.width, window.col_off + window.width + pad_x)
+    row1 = min(src.height, window.row_off + window.height + pad_y)
+    return Window(col0, row0, col1 - col0, row1 - row0)
+
+
+def _outside_window_distance(
+    src: rasterio.DatasetReader, window: Window, xs: np.ndarray, ys: np.ndarray
+) -> np.ndarray:
+    """Lower-bound distance to any pixel excluded by a crop, in raster units.
+
+    Pixel-space distances to uncropped sides are infinite. The affine map's
+    smallest singular value converts pixel-space bounds conservatively, also
+    for rotated, sheared or non-square pixels. A nearer candidate than this
+    bound is therefore also the nearest candidate in the full raster.
     """
-    data = src.read(band, masked=True)
-    if not np.ma.is_masked(data):
-        mask = np.zeros(data.shape, dtype=bool)
-        values = data.ravel()
-    else:
-        mask = np.ma.getmaskarray(data)
-        values = data[~mask]
+    cols, rows = ~src.transform * (xs, ys)
+    distance = np.full(len(xs), np.inf)
+    col1, row1 = window.col_off + window.width, window.row_off + window.height
+    if window.col_off > 0:
+        distance = np.minimum(distance, np.maximum(0.0, cols - window.col_off))
+    if col1 < src.width:
+        distance = np.minimum(distance, np.maximum(0.0, col1 - cols))
+    if window.row_off > 0:
+        distance = np.minimum(distance, np.maximum(0.0, rows - window.row_off))
+    if row1 < src.height:
+        distance = np.minimum(distance, np.maximum(0.0, row1 - rows))
+    affine = src.transform
+    scale = np.linalg.svd(
+        [[affine.a, affine.b], [affine.d, affine.e]], compute_uv=False
+    )[-1]
+    return distance * scale
 
+
+def _build_kdtree(
+    src: rasterio.DatasetReader, band: int, window: Window | None = None
+):
+    """Build a nearest-valid-pixel index, optionally over a regional window."""
+    data = src.read(band, masked=True, window=window)
+    mask = np.ma.getmaskarray(data) | ~np.isfinite(data.data)
+    values = data.data[~mask]
     if values.size == 0:
         return None, None
-
     rows, cols = np.where(~mask)
-    xs, ys = rasterio.transform.xy(src.transform, rows, cols, offset="center")
-    coords = np.column_stack([xs, ys])
-    tree = cKDTree(coords)
+    affine = src.transform if window is None else src.window_transform(window)
+    xs, ys = rasterio.transform.xy(affine, rows, cols, offset="center")
+    tree = cKDTree(np.column_stack([xs, ys]))
     return tree, values.astype(np.float64)
 
 
@@ -191,6 +237,7 @@ def _fill_missing(
     data: np.ndarray,
     fill_method: str,
     cache: Dict,
+    window: Window | None = None,
 ) -> np.ndarray:
     """Fill NaN sampled values using selected missing-data strategy.
 
@@ -208,6 +255,8 @@ def _fill_missing(
         One of `"nan"`, `"mean"`, or `"nearest"`.
     cache : Dict
         Mutable cache for per-band means and KD-trees.
+    window : Window | None, optional
+        Initial region for filling; nearest searches expand if necessary.
 
     Returns
     -------
@@ -224,7 +273,7 @@ def _fill_missing(
 
     if fill_method == "mean":
         if "means" not in cache:
-            cache["means"] = _band_means(src)
+            cache["means"] = _band_means(src, window=window)
         means = cache["means"]
         for b in range(n_bands):
             mask = np.isnan(filled[:, b])
@@ -239,16 +288,32 @@ def _fill_missing(
         if not np.any(mask):
             continue
         key = f"band_{b+1}"
-        if key not in cache["kdtree"]:
-            tree, values = _build_kdtree(src, b + 1)
-            cache["kdtree"][key] = (tree, values)
-        else:
-            tree, values = cache["kdtree"][key]
-        if tree is None or values is None:
-            continue
         q = np.column_stack([xs[mask], ys[mask]])
-        _, idx = tree.query(q, k=1)
-        filled[mask, b] = values[idx]
+        entry = cache["kdtree"].get(key)
+        if entry is None:
+            search_window = window
+            tree, values = _build_kdtree(src, b + 1, window=search_window)
+        else:
+            search_window, tree, values = entry
+
+        while True:
+            cache["kdtree"][key] = (search_window, tree, values)
+            if tree is not None:
+                distances, idx = tree.query(q, k=1)
+                if search_window is None or np.all(
+                    distances < _outside_window_distance(
+                        src, search_window, q[:, 0], q[:, 1]
+                    )
+                ):
+                    filled[mask, b] = values[idx]
+                    break
+            if search_window is None:
+                break  # The full raster contains no valid pixels.
+            expanded = _expand_window(src, search_window)
+            if expanded == search_window:
+                break  # Already searched the full raster, with no valid pixels.
+            search_window = expanded
+            tree, values = _build_kdtree(src, b + 1, window=search_window)
     return filled
 
 
@@ -450,6 +515,33 @@ class RasterStack:
         self.fill_method = fill_method
         self._datasets = [rasterio.open(p) for p in self.raster_paths]
         self._cache: Dict[int, Dict] = {}
+        self._windows: Dict[int, Window] = {}
+
+    def crop_to_points(self, coords: np.ndarray, padding_pixels: int = 32) -> None:
+        """Restrict raster reads for filling to the query extent plus a margin.
+
+        Bounds are computed independently in each raster's pixel coordinates;
+        source files, pixel values and resolution remain unchanged. Nearest
+        searches expand automatically if a closer pixel could lie outside the
+        crop. Calling this again clears indexes and means for the old region.
+        """
+        coords = np.asarray(coords)
+        if coords.ndim != 2 or coords.shape[1] != 2 or len(coords) == 0:
+            raise ValueError("crop coordinates must be a nonempty N x 2 array")
+        if not np.isfinite(coords).all():
+            raise ValueError("crop coordinates must be finite")
+        if not isinstance(padding_pixels, (int, np.integer)) or padding_pixels < 0:
+            raise ValueError("padding_pixels must be a nonnegative integer")
+        windows = {}
+        for idx, ds in enumerate(self._datasets):
+            xs, ys = _coords_to_dataset(ds, coords, self.coord_order, self.coords_crs)
+            if not (np.isfinite(xs).all() and np.isfinite(ys).all()):
+                raise ValueError(
+                    f"Cannot transform crop coordinates for {self.raster_paths[idx]}"
+                )
+            windows[idx] = _point_window(ds, xs, ys, padding_pixels)
+        self._windows = windows
+        self._cache.clear()
 
     def close(self) -> None:
         """Close all open raster datasets held by the stack.
@@ -518,7 +610,9 @@ class RasterStack:
             xs, ys = _coords_to_dataset(ds, coords, self.coord_order, self.coords_crs)
             data, _ = _sample_raw(ds, xs, ys)
             cache = self._cache.setdefault(idx, {})
-            data = _fill_missing(ds, xs, ys, data, fill, cache)
+            data = _fill_missing(
+                ds, xs, ys, data, fill, cache, window=self._windows.get(idx)
+            )
             env_blocks.append(data)
             stem = self.raster_paths[idx].stem
             env_names.extend([f"{stem}_{name}" for name in _band_names(ds)])

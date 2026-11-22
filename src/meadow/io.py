@@ -91,7 +91,8 @@ def load_species(
                 raise ValueError(f"Invalid coords file for species '{name}'")
         except ValueError:
             # Try loading from a 3 column csv (id,lat,lon)
-            coords_df = pd.read_csv(coord_path, header=None, index_col=0, sep=r"\s+")
+            # Allow whitespace or comma separated. Set engine to python because otherwise you get errors.
+            coords_df = pd.read_csv(coord_path, header=None, index_col=0, sep=r"\s+|,", engine="python")
             # Cast index to str to allow for integer sample names
             coords_df.index = coords_df.index.astype("string")
 
@@ -118,7 +119,7 @@ def load_species(
         if not geno_path.exists():
             # If hdf5 exists, don't re-run vcf2hdf5 conversion
             hdf5_path = root / f"{name}.snps.hdf5"
-            if not hdf5_path:
+            if not hdf5_path.exists():
                 # Try loading and converting a vcf file
                 vcf_path = root / f"{name}.vcf"
                 if not vcf_path.exists():

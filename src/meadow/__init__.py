@@ -28,6 +28,7 @@ from .train import build_species_graphs, choose_mesh_spacing_km, train_model
 from .viz import (
     plot_multi_edge_resistance,
     plot_resistance_matrix,
+    plot_samples,
     plot_shared_resistance,
     plot_sites,
     plot_species_resistance,

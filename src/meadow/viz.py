@@ -7,6 +7,8 @@ import numpy as np
 import matplotlib.colors as clr
 import math
 
+from meadow._plotting import _hide_coordinate_ticks, _padded_map_extent
+
 edge_cmap = "RdBu_r"
 
 def _normalize_explore_kwargs(
@@ -133,12 +135,92 @@ def plot_sites(
     return ax
 
 
+def plot_samples(
+    graphs,
+    snap_to_graph: bool = False,
+    sample_size: float = 12.0,
+    **kwargs,
+):
+    """Plot the shared graph and samples from all taxa in one map.
+
+    Parameters
+    ----------
+    graphs : sequence[SpeciesGraph]
+        Graphs sharing the same node coordinates and edge scaffold.
+    snap_to_graph : bool, optional
+        If False (default), draw every sample at its observed coordinates.
+        If True, draw one marker per occupied graph vertex, combining counts
+        across taxa. Assignment follows the same nearest-neighbor rule in
+        stored coordinates used by `build_species_graphs`.
+    sample_size : float, optional
+        Marker area in points squared for one sample; defaults to 12.
+        In vertex mode, marker area is `sample_size * sample_count`.
+    **kwargs
+        Options forwarded to `SpeciesGraph.plot`, including `ax`, `basemap`,
+        `figsize`, `map_padding`, `sample_color`, `sample_alpha`, `edge_color`,
+        `edge_width`, `edge_alpha`, `edge_feature_idx`, and `add_colorbar`.
+        The title defaults to "All samples". Support decay, when requested,
+        uses combined sample support rather than only the first taxon's.
+
+    Returns
+    -------
+    tuple
+        `(ax, gdf_edges)`, matching `SpeciesGraph.plot`. Input graphs and their
+        sample coordinates are not modified.
+    """
+    from dataclasses import replace
+    from scipy.spatial import cKDTree
+
+    graphs = list(graphs)
+    if not graphs:
+        raise ValueError("graphs is empty.")
+    template = graphs[0]
+    for graph in graphs[1:]:
+        if (
+            graph.node_coords.shape != template.node_coords.shape
+            or not np.allclose(graph.node_coords, template.node_coords)
+            or not np.array_equal(graph.edge_index, template.edge_index)
+        ):
+            raise ValueError("All graphs must share the same node coordinates and edge_index.")
+
+    samples = np.concatenate([graph.sample_coords for graph in graphs], axis=0)
+    occupied_nodes = np.empty(0, dtype=np.int64)
+    counts = np.empty(0, dtype=np.int64)
+    if (snap_to_graph or kwargs.get("show_support_decay", False)) and len(samples):
+        assigned = cKDTree(template.node_coords).query(samples, k=1)[1]
+        occupied_nodes, counts = np.unique(assigned, return_counts=True)
+
+    combined = replace(
+        template,
+        name="All samples",
+        sample_coords=template.node_coords[occupied_nodes] if snap_to_graph else samples,
+    )
+    if kwargs.get("show_support_decay", False):
+        decay = kwargs.pop("support_decay_km", None)
+        if decay is not None:
+            from meadow.graph import compute_edge_support_weight
+
+            combined.edge_support_weight = compute_edge_support_weight(
+                template.node_coords, template.edge_index, occupied_nodes,
+                support_decay_km=decay,
+            )
+        elif all(graph.edge_support_weight is not None for graph in graphs):
+            combined.edge_support_weight = np.maximum.reduce(
+                [graph.edge_support_weight for graph in graphs]
+            )
+        else:
+            combined.edge_support_weight = None
+
+    sizes = sample_size * counts if snap_to_graph else sample_size
+    return combined.plot(sample_size=sizes, **kwargs)
+
+
 def plot_species_resistance(
     site_coords: np.ndarray,
     edge_index: np.ndarray,
     edge_values: np.ndarray | None = None,
     ax=None,
-    alpha=1,
+    alpha=0.8,
     cmap=edge_cmap,
     basemap=True,
     basemap_crs: str = "EPSG:3857",
@@ -156,6 +238,11 @@ def plot_species_resistance(
     value_label: str = "Edge resistance",
     figsize: tuple = (6, 5),
     outfile: str | None = None,
+    linewidth: float = 0.8,
+    map_padding: float = 0.1,
+    show_colorbar: bool = True,
+    extent: tuple[float, float, float, float] | None = None,
+    show_ticks: bool = True,
 ):
     """Plot one species graph with edges colored by resistance values.
 
@@ -201,6 +288,17 @@ def plot_species_resistance(
         Coordinates to plot when `show_sites=True`; defaults to `site_coords`.
     value_label : str, optional
         Colorbar label for the plotted edge values.
+    linewidth : float, optional
+        Edge width in points; defaults to 0.8.
+    map_padding : float, optional
+        Minimum fraction of each coordinate span added per side; defaults to 0.1.
+        Bounds also expand to fit the panel without stretching geography.
+    show_colorbar : bool, optional
+        Whether to draw the static plot's colorbar.
+    extent : tuple[float, float, float, float] | None, optional
+        Explicit `(xmin, xmax, ymin, ymax)` plot limits, overriding padding.
+    show_ticks : bool, optional
+        Whether to show coordinate ticks and labels; defaults to True.
 
     Returns
     -------
@@ -213,7 +311,7 @@ def plot_species_resistance(
     from shapely.geometry import LineString
 
     if ax is None:
-        fig, ax = plt.subplots(figsize=figsize)
+        _, ax = plt.subplots(figsize=figsize, constrained_layout=True)
 
     if coord_order not in {"latlon", "lonlat"}:
         raise ValueError("coord_order must be 'latlon' or 'lonlat'")
@@ -262,19 +360,21 @@ def plot_species_resistance(
 
     lc = LineCollection(segments, cmap=cmap, alpha=alpha)
     lc.set_array(edge_values)
-    lc.set_linewidth(1.0)
+    lc.set_linewidth(linewidth)
     if edge_support is not None:
         lc.set_alpha(alpha * edge_support)
     ax.add_collection(lc)
-    ax.autoscale()
-    ax.set_xlabel("Longitude" if basemap is None or basemap is False else "X")
-    ax.set_ylabel("Latitude" if basemap is None or basemap is False else "Y")
-    plt.colorbar(lc, ax=ax, label=value_label)
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+    if not show_ticks:
+        _hide_coordinate_ticks(ax)
+    if show_colorbar:
+        ax.figure.colorbar(lc, ax=ax, label=value_label, fraction=0.035, pad=0.03, aspect=30)
 
-    xlim = None
-    ylim = None
-    if show_sites:
-        coords_plot = site_coords if sample_coords is None else sample_coords
+    bounds_x = [x]
+    bounds_y = [y]
+    coords_plot = site_coords if sample_coords is None else sample_coords
+    if len(coords_plot):
         if basemap is not None and basemap is not False:
             from meadow.graph import project_coords
 
@@ -294,31 +394,34 @@ def plot_species_resistance(
                 x_s = coords_plot[:, 0]
                 y_s = coords_plot[:, 1]
 
-        xmin = min(float(x.min()), float(x_s.min()))
-        xmax = max(float(x.max()), float(x_s.max()))
-        ymin = min(float(y.min()), float(y_s.min()))
-        ymax = max(float(y.max()), float(y_s.max()))
-        xlim = (xmin, xmax)
-        ylim = (ymin, ymax)
-        ax.set_xlim(*xlim)
-        ax.set_ylim(*ylim)
-        ax.scatter(x_s, y_s, s=10, c="black", alpha=0.75, zorder=3)
+        bounds_x.append(x_s)
+        bounds_y.append(y_s)
+        if show_sites:
+            ax.scatter(x_s, y_s, s=10, c="black", alpha=0.75, zorder=3)
+
+    if extent is None:
+        position = ax.get_position(original=True)
+        panel_aspect = (
+            position.width * ax.figure.get_figwidth()
+            / (position.height * ax.figure.get_figheight())
+        )
+        extent = _padded_map_extent(
+            np.concatenate(bounds_x), np.concatenate(bounds_y), map_padding, panel_aspect
+        )
+    ax.set_xlim(extent[:2])
+    ax.set_ylim(extent[2:])
+    ax.set_aspect("equal", adjustable="box")
 
     if basemap is not None and basemap is not False:
-
-        if basemap is True:
-            basemap_source = ctx.providers.Esri.WorldGrayCanvas
-        else:
-            basemap_source = basemap
-        ctx.add_basemap(ax,
-                        source=basemap_source,
-                        crs=basemap_crs,
-                        attribution_size=5,
-                        headers={"User-Agent": "Meadow/1.0"},
-                        reset_extent=False)
-        if xlim is not None and ylim is not None:
-            ax.set_xlim(*xlim)
-            ax.set_ylim(*ylim)
+        basemap_source = ctx.providers.Esri.WorldGrayCanvas if basemap is True else basemap
+        ctx.add_basemap(
+            ax,
+            source=basemap_source,
+            crs=basemap_crs,
+            attribution_size=5,
+            headers={"User-Agent": "Meadow/1.0"},
+            reset_extent=True,
+        )
 
     crs = basemap_crs if basemap is not None and basemap is not False else coords_crs
     gdf = gpd.GeoDataFrame(
@@ -335,7 +438,7 @@ def plot_species_resistance(
     )
 
     if outfile:
-        plt.savefig(outfile)
+        ax.figure.savefig(outfile)
 
     folium_map = None
     if explore:
@@ -350,7 +453,7 @@ def plot_multi_edge_resistance(
     graphs,
     model,
     cmap=edge_cmap,
-    alpha=1,
+    alpha=0.8,
     basemap=True,
     basemap_crs: str = "EPSG:3857",
     coord_order: str = "latlon",
@@ -365,9 +468,12 @@ def plot_multi_edge_resistance(
     support_decay_km: float | None = None,
     sample_coords_list: list[np.ndarray] | None = None,
     ncols: int = 2,
-    figsize: tuple[int, int] = (6, 5),
+    figsize: tuple[int, int] = (8, 10),
     outfile: str | None = None,
     outdir: str | None = None,
+    show_colorbar: bool = True,
+    linewidth: float = 0.8,
+    map_padding: float = 0.1,
 ):
     """Plot resistance edges for multiple species as facets or an overlay summary.
 
@@ -382,7 +488,7 @@ def plot_multi_edge_resistance(
     cmap : Any, optional
         Colormap used for edge coloring.
     alpha : float
-        Set the alpha (transparenc) for drawing edges
+        Edge opacity; defaults to 0.8.
     basemap : Any, optional
         `True`/provider object for background basemap, or `False`/`None` to disable.
     basemap_crs : str, optional
@@ -415,7 +521,16 @@ def plot_multi_edge_resistance(
     ncols : int, optional
         Number of subplot columns in faceted mode.
     figsize : tuple[int, int], optional
-        Base figure size.
+        Size per panel in inches (or total figure size in overlay mode).
+    show_colorbar : bool, optional
+        Whether to draw static colorbars in both facet and overlay modes.
+        Interactive legends remain controlled by `explore_kwargs`.
+    linewidth : float, optional
+        Edge width in points; defaults to 0.8.
+    map_padding : float, optional
+        Minimum fraction of each coordinate span added per side; defaults to 0.1.
+        Bounds also expand to fit the panel without stretching geography.
+        All facets use the same extent, including sample coordinates.
 
     Returns
     -------
@@ -425,10 +540,9 @@ def plot_multi_edge_resistance(
     """
     import matplotlib.pyplot as plt
     import torch
-    import geopandas as gpd
-    from shapely.geometry import LineString
-    from matplotlib.collections import LineCollection
 
+    if not graphs:
+        raise ValueError("graphs is empty")
     if len(species_list) != len(graphs):
         raise ValueError("species_list and graphs must have the same length")
     if sample_coords_list is not None and len(sample_coords_list) != len(species_list):
@@ -486,18 +600,28 @@ def plot_multi_edge_resistance(
             raise ValueError("edge_support_weight length must equal edge_index row count.")
         return weights
 
+    # Include all samples even when hidden so site toggles preserve framing.
+    plot_samples = [
+        sample_coords_list[i] if sample_coords_list is not None else sp.sample_coords
+        for i, sp in enumerate(species_list)
+    ]
+    xs_all, ys_all = [], []
+    for graph, samples in zip(graphs, plot_samples):
+        for coords in (graph.node_coords, samples):
+            if len(coords):
+                x, y, _ = _coords_for_plot(coords)
+                xs_all.append(x)
+                ys_all.append(y)
+    common_extent = _padded_map_extent(
+        np.concatenate(xs_all), np.concatenate(ys_all), map_padding,
+        figsize[0] / figsize[1],
+    )
+
     colorbar_label = "Edge resistance" if combine_with_shared else "Species-specific edge logit"
 
     if overlay:
-        fig, ax = plt.subplots(figsize=figsize)
         values_by_species = []
         support_by_species = []
-        xs_all = []
-        ys_all = []
-
-        if not graphs:
-            raise ValueError("graphs is empty")
-
         base_graph = graphs[0]
         for g in graphs[1:]:
             if not np.array_equal(g.edge_index, base_graph.edge_index):
@@ -512,9 +636,6 @@ def plot_multi_edge_resistance(
             support = _support_weights_for_graph(g)
             if support is not None:
                 support_by_species.append(support)
-            x, y, crs = _coords_for_plot(g.node_coords)
-            xs_all.append(x)
-            ys_all.append(y)
 
         values_by_species = np.vstack(values_by_species)
         support_all = None
@@ -528,81 +649,31 @@ def plot_multi_edge_resistance(
         else:
             raise ValueError("overlay_stat must be 'mean' or 'std'")
 
-        x_base, y_base, crs = _coords_for_plot(base_graph.node_coords)
-        segments_all = []
-        for i, j in base_graph.edge_index:
-            segments_all.append([(x_base[i], y_base[i]), (x_base[j], y_base[j])])
-
-        lc = LineCollection(segments_all, cmap=cmap, alpha=alpha)
-        lc.set_array(values_all)
-        lc.set_linewidth(2.0)
-        if support_all is not None:
-            lc.set_alpha(alpha * support_all)
-        ax.add_collection(lc)
-        ax.autoscale()
-        ax.set_xlabel("Longitude" if basemap is None or basemap is False else "X")
-        ax.set_ylabel("Latitude" if basemap is None or basemap is False else "Y")
-        plt.colorbar(lc, ax=ax, label=colorbar_label)
-
-        if show_sites:
-            for sp_idx, sp in enumerate(species_list):
-                coords_plot = (
-                    sample_coords_list[sp_idx]
-                    if sample_coords_list is not None
-                    else sp.sample_coords
-                )
-                x_s, y_s, _ = _coords_for_plot(coords_plot)
-                xs_all.append(x_s)
-                ys_all.append(y_s)
-            if xs_all and ys_all:
-                x_concat = np.concatenate(xs_all)
-                y_concat = np.concatenate(ys_all)
-                xlim = (float(x_concat.min()), float(x_concat.max()))
-                ylim = (float(y_concat.min()), float(y_concat.max()))
-                ax.set_xlim(*xlim)
-                ax.set_ylim(*ylim)
-
-        if basemap is not None and basemap is not False:
-            import contextily as ctx
-
-            if basemap is True:
-                basemap_source = ctx.providers.Esri.WorldGrayCanvas
-            else:
-                basemap_source = basemap
-            ctx.add_basemap(ax,
-                            source=basemap_source,
-                            crs=basemap_crs,
-                            attribution_size=5,
-                            headers={"User-Agent": "Meadow/1.0"},
-                            reset_extent=False)
-            if show_sites and xs_all and ys_all:
-                ax.set_xlim(*xlim)
-                ax.set_ylim(*ylim)
-
-        if show_sites:
-            for sp_idx, sp in enumerate(species_list):
-                coords_plot = (
-                    sample_coords_list[sp_idx]
-                    if sample_coords_list is not None
-                    else sp.sample_coords
-                )
-                x_s, y_s, _ = _coords_for_plot(coords_plot)
-                ax.scatter(x_s, y_s, s=10, c="black", alpha=0.75, zorder=3)
-
-        gdf = gpd.GeoDataFrame(
-            {
-                "edge_value": values_all,
-                "edge_support_weight": (
-                    support_all
-                    if support_all is not None
-                    else np.full(base_graph.edge_index.shape[0], np.nan, dtype=float)
-                ),
-                "overlay_stat": stat,
-                "n_species": len(species_list),
-            },
-            geometry=[LineString(seg) for seg in segments_all],
-            crs=crs,
+        ax, gdf = plot_species_resistance(
+            base_graph.node_coords,
+            base_graph.edge_index,
+            values_all,
+            alpha=alpha,
+            cmap=cmap,
+            basemap=basemap,
+            basemap_crs=basemap_crs,
+            coord_order=coord_order,
+            coords_crs=coords_crs,
+            show_sites=show_sites,
+            show_support_decay=show_support_decay,
+            edge_support_weight=support_all,
+            sample_coords=np.concatenate(plot_samples),
+            value_label=colorbar_label,
+            figsize=figsize,
+            outfile=outfile,
+            linewidth=linewidth,
+            map_padding=map_padding,
+            show_colorbar=show_colorbar,
+            extent=common_extent,
+            show_ticks=False,
         )
+        gdf["overlay_stat"] = stat
+        gdf["n_species"] = len(species_list)
 
         folium_map = None
         if explore:
@@ -613,7 +684,10 @@ def plot_multi_edge_resistance(
     num = len(species_list)
     cols = max(1, min(ncols, num))
     rows = math.ceil(num / cols)
-    fig, axes = plt.subplots(rows, cols, figsize=(figsize[0] * cols, figsize[1] * rows))
+    fig, axes = plt.subplots(
+        rows, cols, figsize=(figsize[0] * cols, figsize[1] * rows),
+        constrained_layout=True,
+    )
     axes_arr = np.array(axes).reshape(-1)
 
     gdfs = []
@@ -643,8 +717,13 @@ def plot_multi_edge_resistance(
             show_sites=show_sites,
             show_support_decay=show_support_decay,
             edge_support_weight=edge_support,
-            sample_coords=coords_plot if show_sites else None,
+            sample_coords=coords_plot,
             value_label=colorbar_label,
+            linewidth=linewidth,
+            map_padding=map_padding,
+            show_colorbar=show_colorbar,
+            extent=common_extent,
+            show_ticks=False,
         )
         if explore:
             ax_i, gdf_i, fmap_i = res
@@ -659,10 +738,11 @@ def plot_multi_edge_resistance(
         ax_extra.remove()
 
     if outfile:
-        plt.savefig(outfile)
+        fig.savefig(outfile)
 
     if outdir:
-        for i, ax in enumerate(axes_arr):
+        fig.canvas.draw()
+        for i, ax in enumerate(axes_arr[:num]):
             bbox = ax.get_tightbbox(fig.canvas.get_renderer())
             bbox = bbox.transformed(fig.dpi_scale_trans.inverted())
             fig.savefig(f"{outdir}/axis_{i}.png", bbox_inches=bbox)
@@ -676,7 +756,7 @@ def plot_shared_resistance(
     species_list,
     graphs,
     model,
-    alpha: float = 1,
+    alpha: float = 0.8,
     graph_index: int = 0,
     cmap=edge_cmap,
     basemap=True,
@@ -698,6 +778,8 @@ def plot_shared_resistance(
     support_decay_km: float | None = None,
     figsize: tuple = (6,5),
     outfile: str | None = None,
+    linewidth: float = 0.8,
+    map_padding: float = 0.1,
 ):
     """Plot the shared cross-species resistance component as edges or a surface.
 
@@ -750,6 +832,11 @@ def plot_shared_resistance(
     support_decay_km : float | None, optional
         Plot-time support decay scale. When omitted, existing graph
         `edge_support_weight` values are used.
+
+    linewidth : float, optional
+        Edge width in points when `rasterize=False`; defaults to 0.8.
+    map_padding : float, optional
+        Map padding fraction when `rasterize=False`; defaults to 0.1.
 
     Returns
     -------
@@ -812,10 +899,13 @@ def plot_shared_resistance(
             show_sites=show_sites,
             show_support_decay=show_support_decay,
             edge_support_weight=edge_support,
-            sample_coords=sp.sample_coords if show_sites else None,
+            sample_coords=sp.sample_coords,
             alpha=alpha,
             figsize=figsize,
             outfile=outfile,
+            linewidth=linewidth,
+            map_padding=map_padding,
+            show_ticks=False,
         )
 
     import matplotlib.pyplot as plt
@@ -932,8 +1022,9 @@ def plot_shared_resistance(
         zorder=1,
     )
     plt.colorbar(im, ax=ax, label="Shared resistance")
-    ax.set_xlabel("Longitude" if basemap is None or basemap is False else "X")
-    ax.set_ylabel("Latitude" if basemap is None or basemap is False else "Y")
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+    _hide_coordinate_ticks(ax)
 
     if show_sites:
         if coord_order == "latlon":

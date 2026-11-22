@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 from typing import Tuple
 
+import networkx as nx
 import numpy as np
 
 from rasterio.crs import CRS
@@ -69,6 +70,36 @@ class SpeciesGraph:
     val_pair_i: np.ndarray | None = None
     val_pair_j: np.ndarray | None = None
     val_pair_dist: np.ndarray | None = None
+
+    def export_gml(self, path: str | Path) -> Path:
+        """Export shared node coordinates and undirected connections to GML.
+
+        Nodes are added in their stored order, using their array indices as
+        identifiers and their latitude/longitude as `lat` and `lon` attributes.
+        The result can be loaded with `build_species_graphs(input_graph=path)`.
+        Edge row order may change when the GML file is reloaded.
+
+        Sample coordinates, pairwise targets, edge features, and support weights
+        are not exported; these are rebuilt for the receiving notebook's data.
+
+        Parameters
+        ----------
+        path : str | pathlib.Path
+            Destination GML file. Its parent directory must exist. An existing
+            file is overwritten, following `networkx.write_gml` behavior.
+
+        Returns
+        -------
+        pathlib.Path
+            Path to the exported file.
+        """
+        path = Path(path)
+        shared = nx.Graph(name=self.name)
+        for node_id, (lat, lon) in enumerate(self.node_coords):
+            shared.add_node(node_id, lat=float(lat), lon=float(lon))
+        shared.add_edges_from(self.edge_index.tolist())
+        nx.write_gml(shared, path)
+        return path
 
     def plot(
         self,

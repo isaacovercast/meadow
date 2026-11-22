@@ -79,16 +79,18 @@ class SpeciesGraph:
         coord_order: str = "latlon",
         coords_crs: str = "EPSG:4326",
         sample_size: float = 12.0,
-        edge_width: float = 2.0,
+        edge_width: float = 0.8,
         edge_cmap: str = "RdBu_r",
         sample_color: str = "black",
         sample_alpha: float = 0.8,
-        edge_alpha: float = 0.9,
+        edge_alpha: float = 0.8,
         edge_color: str = "#1f77b4",
         add_colorbar: bool = True,
         show_support_decay: bool = False,
         support_decay_km: float | None = None,
         title: str | None = None,
+        figsize: tuple[float, float] = (5, 7),
+        map_padding: float = 0.1,
     ):
         """Plot graph edges with optional edge-feature coloring and sample overlay.
 
@@ -111,7 +113,7 @@ class SpeciesGraph:
         sample_size : float, optional
             Marker size for sample points.
         edge_width : float, optional
-            Edge line width.
+            Edge line width in points; defaults to 0.8.
         edge_cmap : str, optional
             Colormap used when `edge_feature_idx` is provided.
         sample_color : str, optional
@@ -119,7 +121,7 @@ class SpeciesGraph:
         sample_alpha : float, optional
             Marker alpha for sample points.
         edge_alpha : float, optional
-            Edge alpha value.
+            Edge opacity; defaults to 0.8.
         edge_color : str, optional
             Constant edge color used when `edge_feature_idx=None`.
         add_colorbar : bool, optional
@@ -131,6 +133,12 @@ class SpeciesGraph:
             `edge_support_weight` values are used.
         title : str | None, optional
             Optional plot title; defaults to species name.
+        figsize : tuple[float, float], optional
+            Figure size in inches when creating an axis; defaults to (8, 10).
+        map_padding : float, optional
+            Minimum fraction of each coordinate span added per side; defaults
+            to 0.1. Bounds also expand to fit the panel without stretching
+            geography. Axis titles and coordinate ticks are hidden.
 
         Returns
         -------
@@ -141,6 +149,7 @@ class SpeciesGraph:
         import matplotlib.pyplot as plt
         from matplotlib.collections import LineCollection
         from shapely.geometry import LineString
+        from meadow._plotting import _hide_coordinate_ticks, _padded_map_extent
 
         node_coords = np.asarray(self.node_coords, dtype=np.float64)
         sample_coords = np.asarray(self.sample_coords, dtype=np.float64)
@@ -183,7 +192,7 @@ class SpeciesGraph:
                 raise ValueError("edge_support_weight length must equal edge_index row count.")
 
         if ax is None:
-            _, ax = plt.subplots(figsize=(6, 5))
+            _, ax = plt.subplots(figsize=figsize, constrained_layout=True)
 
         if basemap is not None and basemap is not False:
             node_xy = project_coords(
@@ -192,18 +201,20 @@ class SpeciesGraph:
                 coords_crs=coords_crs,
                 target_crs=basemap_crs,
             )
-            sample_xy = project_coords(
-                sample_coords,
-                coord_order=coord_order,
-                coords_crs=coords_crs,
-                target_crs=basemap_crs,
+            sample_xy = (
+                project_coords(
+                    sample_coords,
+                    coord_order=coord_order,
+                    coords_crs=coords_crs,
+                    target_crs=basemap_crs,
+                )
+                if len(sample_coords) else np.empty((0, 2), dtype=np.float64)
             )
             x = node_xy[:, 0]
             y = node_xy[:, 1]
             xs = sample_xy[:, 0]
             ys = sample_xy[:, 1]
             plot_crs = basemap_crs
-            xlabel, ylabel = "X", "Y"
         else:
             if coord_order == "latlon":
                 x = node_coords[:, 1]
@@ -216,7 +227,6 @@ class SpeciesGraph:
                 xs = sample_coords[:, 0]
                 ys = sample_coords[:, 1]
             plot_crs = coords_crs
-            xlabel, ylabel = "Longitude", "Latitude"
 
         segments = [[(x[i], y[i]), (x[j], y[j])] for i, j in edge_index]
         line_collection: LineCollection
@@ -256,33 +266,36 @@ class SpeciesGraph:
         ax.add_collection(line_collection)
         if sample_coords.shape[0] > 0:
             ax.scatter(xs, ys, s=sample_size, c=sample_color, alpha=sample_alpha, zorder=3)
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel(ylabel)
+        ax.set_xlabel("")
+        ax.set_ylabel("")
+        _hide_coordinate_ticks(ax)
 
         if title is None:
             title = self.name
         if title:
             ax.set_title(title)
 
-        if sample_coords.shape[0] > 0:
-            x_min = min(float(np.min(x)), float(np.min(xs)))
-            x_max = max(float(np.max(x)), float(np.max(xs)))
-            y_min = min(float(np.min(y)), float(np.min(ys)))
-            y_max = max(float(np.max(y)), float(np.max(ys)))
-        else:
-            x_min = float(np.min(x))
-            x_max = float(np.max(x))
-            y_min = float(np.min(y))
-            y_max = float(np.max(y))
-        ax.set_xlim(x_min, x_max)
-        ax.set_ylim(y_min, y_max)
-
         if edge_feature_idx is not None and add_colorbar:
-            plt.colorbar(
+            ax.figure.colorbar(
                 line_collection,
                 ax=ax,
                 label=f"edge_features[:, {edge_feature_idx}]",
+                fraction=0.035,
+                pad=0.03,
+                aspect=30,
             )
+
+        position = ax.get_position(original=True)
+        panel_aspect = (
+            position.width * ax.figure.get_figwidth()
+            / (position.height * ax.figure.get_figheight())
+        )
+        extent = _padded_map_extent(
+            np.concatenate([x, xs]), np.concatenate([y, ys]), map_padding, panel_aspect
+        )
+        ax.set_xlim(extent[:2])
+        ax.set_ylim(extent[2:])
+        ax.set_aspect("equal", adjustable="box")
 
         if basemap is not None and basemap is not False:
             try:
@@ -294,14 +307,14 @@ class SpeciesGraph:
                     "or disable basemap with basemap=False."
                 ) from exc
             basemap_source = ctx.providers.Esri.WorldGrayCanvas if basemap is True else basemap
-            ctx.add_basemap(ax,
-                            source=basemap_source,
-                            crs=basemap_crs,
-                            attribution_size=5,
-                            headers={"User-Agent": "Meadow/1.0"},
-                            reset_extent=False)
-            ax.set_xlim(x_min, x_max)
-            ax.set_ylim(y_min, y_max)
+            ctx.add_basemap(
+                ax,
+                source=basemap_source,
+                crs=basemap_crs,
+                attribution_size=5,
+                headers={"User-Agent": "Meadow/1.0"},
+                reset_extent=True,
+            )
 
         gdf_edges = gpd.GeoDataFrame(
             {

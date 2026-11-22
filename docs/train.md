@@ -31,6 +31,14 @@ Environmental extraction:
 
 - pass `raster_paths` or `raster_root` to sample node covariates during graph construction.
 - rasters are sampled at the exact node coordinates used for training.
+- before filling missing covariates, raster reads and nearest-pixel indexes are
+  automatically restricted to the final mesh extent (including the mesh's study
+  buffer) plus 32 raster pixels on each side. Supplied input graphs use their node
+  extent. Windows are transformed independently into each raster's pixel grid.
+- nearest searches expand automatically when needed to find a globally nearest
+  valid pixel. Global rasters remain unchanged; no intermediate crop files or
+  notebook preprocessing are required. If mean filling is selected, it uses the
+  regional window's mean.
 
 Returns:
 

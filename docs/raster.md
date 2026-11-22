@@ -88,5 +88,31 @@ Returns:
 - `env`: `N x K` concatenated sampled matrix.
 - `env_names`: feature names aligned to columns in `env`.
 
+### `crop_to_points(coords, padding_pixels=32)`
+Restricts reads for missing-value filling to a rectangular window enclosing the
+points, with an extra pixel margin. Each window is calculated in that raster's
+own coordinate system, including rotated or non-square pixels. Original rasters
+are not rewritten, reprojected, or resampled.
+
+- `coords`: nonempty `N x 2` array in the stack's coordinate order and CRS.
+- `padding_pixels`: nonnegative integer margin, default 32 pixels on each side.
+
+Nearest filling initially indexes only valid pixels in this window. If a closer
+valid pixel could lie outside it, the search window grows until a globally
+nearest pixel is found, or the full raster has been searched. Distances use the
+raster's native coordinate units, as in uncropped nearest filling. An entirely
+invalid raster leaves missing values as `NaN`. Mean filling uses the regional
+mean. Changing the crop clears cached indexes and means from the previous region.
+
+`build_species_graphs()` applies this automatically to the final graph-node
+coordinates before extracting environmental covariates, for both generated meshes
+and supplied input graphs. Direct `RasterStack` users can call it explicitly:
+
+```python
+with RasterStack(paths, fill_method="nearest") as stack:
+    stack.crop_to_points(coords)
+    env, names = stack.sample_points(coords)
+```
+
 ### `close()`
 Closes all raster datasets held by the stack.

@@ -19,15 +19,18 @@ Fields:
 - `val_pair_i`, `val_pair_j`, `val_pair_dist`: optional validation targets.
 
 ## `SpeciesGraph.plot(edge_feature_idx=None, ...)`
-Plots graph edges and sample locations, with optional edge coloring by a selected `edge_features` column index.
+Plots graph edges and sample locations, with optional edge coloring by a selected `edge_features` column index. Styling matches the resistance plots: padded map bounds, equal geographic aspect, narrow colorbars, and no axis titles or coordinate ticks. New figures use constrained layout.
 
 Parameters:
 
 - `edge_feature_idx`: feature-column index for edge coloring, or `None` for a constant edge color.
-- `basemap`: `True` for CartoDB Positron, `False` for no basemap, or a contextily provider object.
+- `basemap`: `True` for Esri WorldGrayCanvas, `False` for no basemap, or a contextily provider object.
 - `basemap_crs`: projected CRS used for basemap rendering.
 - `coord_order`: coordinate order (`"latlon"` or `"lonlat"`).
 - `coords_crs`: CRS of stored coordinates.
+- `figsize`: figure size in inches when creating an axis (default `(8, 10)`).
+- `map_padding`: minimum fraction of each coordinate span added per side (default `0.1`). Graph nodes and sample locations contribute to the bounds, which expand to fit the panel.
+- `edge_width`, `edge_alpha`: edge width and opacity (both default to `0.8`).
 - style args: `sample_size`, `edge_width`, `edge_cmap`, `sample_color`, `sample_alpha`, `edge_alpha`, `edge_color`, `add_colorbar`, `title`.
 
 Returns:

@@ -19,8 +19,33 @@ Returns:
 
 - `ax`: matplotlib axis with plotted sites.
 
+## `plot_samples(graphs, snap_to_graph=False, sample_size=12, **kwargs)`
+Plots the shared graph once with samples from every taxon. All graphs must share node coordinates and edges. The original graphs remain unchanged.
+
+- `snap_to_graph=False`: show each sample at its observed coordinates.
+- `snap_to_graph=True`: show one marker at each assigned vertex, with marker area proportional to the total number of samples across taxa at that vertex. Assignment matches the nearest-node rule used by `build_species_graphs`.
+- `sample_size`: marker area for one sample, in points squared (default `12`). At a vertex containing `n` samples, the marker area is `n * sample_size`.
+- `**kwargs`: existing `graph.plot()` options, including `figsize`, `basemap`, `sample_color`, `sample_alpha`, `edge_color`, `edge_width`, `map_padding`, `edge_feature_idx`, and `add_colorbar`. Feature-colored edges use the first graph's features. All samples use the requested marker color.
+
+When support decay is enabled, existing support weights are combined by taking the maximum across taxa; an explicit `support_decay_km` recomputes support from all assigned sample vertices.
+
+```python
+from meadow.viz import plot_samples
+
+# Observed sample coordinates.
+ax, edges = plot_samples(graphs, figsize=(10, 12), edge_color="gray")
+
+# Graph vertices; marker area represents sample count.
+ax, edges = plot_samples(
+    graphs, snap_to_graph=True, sample_size=15,
+    figsize=(10, 12), edge_color="gray",
+)
+```
+
+Returns `(ax, gdf_edges)`, matching `graph.plot()`. Titles, padding, equal geographic aspect, and hidden coordinate ticks follow that method.
+
 ## `plot_species_resistance(...)`
-Plots one graph's edge resistances as line segments.
+Plots one graph's edge resistances as line segments, with equal geographic aspect, padded bounds, and no axis titles.
 
 Parameters:
 
@@ -41,6 +66,12 @@ Parameters:
 - `show_sites`: overlay points on top of edges.
 - `sample_coords`: alternate point coordinates for overlays.
 - `value_label`: colorbar label for the plotted edge values.
+- `alpha`: edge opacity (default `0.8`).
+- `linewidth`: edge width in points (default `0.8`).
+- `map_padding`: minimum fraction of each coordinate span added per side (default `0.1`); bounds also expand to fit the panel without stretching geography. Sample coordinates contribute to the bounds even when hidden.
+- `extent`: optional explicit `(xmin, xmax, ymin, ymax)` limits in plotting coordinates, overriding padding.
+- `show_colorbar`: show the static colorbar (default `True`).
+- `show_ticks`: show coordinate ticks and labels (default `True` for this single-species helper).
 
 Returns:
 
@@ -64,7 +95,25 @@ Parameters:
 - `show_sites`: overlay point coordinates.
 - `sample_coords_list`: optional per-species point coordinate overrides.
 - `ncols`: subplot columns when `overlay=False`.
-- `figsize`: base plot size.
+- `figsize`: size **per panel** in inches (default `(8, 10)`); total figure size in overlay mode.
+- `alpha`: edge opacity (default `0.8`).
+- `linewidth`: edge width in points (default `0.8`).
+- `map_padding`: minimum fraction of each coordinate span added per side (default `0.1`); bounds also expand to fit the panel without stretching geography. All facets use the same padded extent, including all sample coordinates whether shown or hidden.
+- `show_colorbar`: show static colorbars in either facet or overlay mode (default `True`). Interactive legends are controlled separately through `explore_kwargs`.
+
+Facets use constrained layout and narrow colorbars. Facets and overlays hide axis titles and coordinate ticks. For example:
+
+```python
+axes, gdfs = plot_multi_edge_resistance(
+    species_list, graphs, model,
+    show_sites=True,
+    show_colorbar=False,
+    alpha=0.8,
+    linewidth=0.8,
+    map_padding=0.1,
+    figsize=(8, 10),
+)
+```
 
 Returns:
 
@@ -72,7 +121,7 @@ Returns:
 - Facet mode: `(axes, gdfs)` (plus maps when `explore=True`).
 
 ## `plot_shared_resistance(...)`
-Plots the shared model component as colored edges or a rasterized interpolated surface.
+Plots the shared model component as colored edges or a rasterized interpolated surface, without axis titles or coordinate ticks.
 
 Parameters:
 
@@ -88,6 +137,8 @@ Parameters:
 - `rbf_function`, `rbf_kwargs`: RBF interpolation settings.
 - `kriging_kwargs`: kriging interpolation settings.
 - `show_sites`: overlay site points.
+- `alpha`: edge opacity (default `0.8`).
+- `linewidth`, `map_padding`: edge width and map padding when `rasterize=False`, matching the species and multi-species plots.
 
 Returns:
 

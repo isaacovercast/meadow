@@ -107,6 +107,7 @@ def load_species(
             sample_names = list(coords_df.index)
 
         if verbose: print(f"    nsamples: {len(sample_coords)}")
+        if verbose: print(f"    nsites: {np.unique(sample_coords, axis=0).shape[0]}")
 
         # Force the user to choose orientation of georeference data
         if coords_order not in ["latlon", "lonlat"]:

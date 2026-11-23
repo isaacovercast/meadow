@@ -721,20 +721,37 @@ def _dggrid_resolution_for_spacing(spacing_km: float) -> int:
 
 
 def _write_geojson_region(geometry, geometry_crs: CRS, out_path: Path) -> None:
-    """Write one clipping geometry to a GeoJSON file in EPSG:4326."""
+    """Write EPSG:4326 clipping pieces small enough for DGGRID's quad projections."""
     import geopandas as gpd
-    from shapely.geometry import mapping
+    from shapely.geometry import box, mapping
 
     region_wgs84 = gpd.GeoSeries([geometry], crs=geometry_crs).to_crs("EPSG:4326").iloc[0]
+    if region_wgs84.is_empty:
+        raise ValueError("The clipping region is empty; check the bounding polygon and buffer_km.")
+    if not np.isfinite(region_wgs84.bounds).all():
+        raise ValueError(
+            "The clipping region cannot be reprojected to EPSG:4326: it extends outside "
+            f"the valid domain of {geometry_crs}. Reduce buffer_km (use buffer_km=0 to "
+            "preserve a supplied bounding polygon), or choose a projection that covers "
+            "the entire buffered region."
+        )
+    # DGGRID projects each entire clipping polygon into every intersected quad.
+    # Continental polygons can have vertices beyond a quad's 90-degree horizon.
+    # Adjoining tiles preserve the region while keeping each input polygon local.
+    min_lon, min_lat, max_lon, max_lat = region_wgs84.bounds
+    tile_size = 20
+    features = []
+    for lon in range(int(np.floor(min_lon / tile_size)) * tile_size, int(np.ceil(max_lon)), tile_size):
+        for lat in range(int(np.floor(min_lat / tile_size)) * tile_size, int(np.ceil(max_lat)), tile_size):
+            clipped = region_wgs84.intersection(box(lon, lat, lon + tile_size, lat + tile_size))
+            pieces = clipped.geoms if hasattr(clipped, "geoms") else [clipped]
+            for piece in pieces:
+                if piece.is_empty or piece.geom_type != "Polygon":
+                    continue
+                features.append({"type": "Feature", "properties": {}, "geometry": mapping(piece)})
     payload = {
         "type": "FeatureCollection",
-        "features": [
-            {
-                "type": "Feature",
-                "properties": {},
-                "geometry": mapping(region_wgs84),
-            }
-        ],
+        "features": features,
     }
     out_path.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -759,42 +776,28 @@ def _write_dggrid_metafile(
     meta_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _run_dggrid_metafile(metafile_path: Path, workdir: Path) -> None:
-    """Invoke an external DGGRID-style command against a metafile."""
+def _run_dggrid_metafile(metafile_path: Path, workdir: Path) -> subprocess.CompletedProcess[str]:
+    """Run DGGRID's positional metafile command and preserve failure diagnostics."""
     executable = "dggrid"
     exe = shutil.which(executable) or executable
-    attempts = [
-        [exe, str(metafile_path)],
-        [exe, "--metafile", str(metafile_path)],
-        [exe, "-m", str(metafile_path)],
-    ]
-    errors: list[str] = []
-    for cmd in attempts:
-        try:
-            subprocess.run(
-                cmd,
-                cwd=str(workdir),
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            return
-        except FileNotFoundError:
-            errors.append(f"{cmd[0]}: executable not found")
-            break
-        except subprocess.CalledProcessError as exc:
-            stderr = exc.stderr.strip() if exc.stderr else ""
-            stdout = exc.stdout.strip() if exc.stdout else ""
-            msg = f"{' '.join(cmd)} failed with code {exc.returncode}"
-            if stderr:
-                msg += f"; stderr: {stderr}"
-            elif stdout:
-                msg += f"; stdout: {stdout}"
-            errors.append(msg)
-    raise RuntimeError(
-        "DGGRID mesh generation failed. Attempted commands:\n- "
-        + "\n- ".join(errors)
-    )
+    cmd = [exe, str(metafile_path)]
+    try:
+        return subprocess.run(
+            cmd,
+            cwd=str(workdir),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("DGGRID mesh generation failed: dggrid executable not found.") from exc
+    except subprocess.CalledProcessError as exc:
+        details = f"DGGRID mesh generation failed with code {exc.returncode}."
+        if exc.stdout:
+            details += f"\nstdout:\n{exc.stdout.strip()}"
+        if exc.stderr:
+            details += f"\nstderr:\n{exc.stderr.strip()}"
+        raise RuntimeError(details) from exc
 
 
 def _find_dggrid_output(output_prefix: Path) -> Path | None:
@@ -1408,7 +1411,7 @@ def build_dggrid_mesh_graph(
 
         _write_geojson_region(region, region_crs, region_path)
         _write_dggrid_metafile(meta_path, region_path, output_prefix, resolution)
-        _run_dggrid_metafile(meta_path, tmp)
+        result = _run_dggrid_metafile(meta_path, tmp)
 
         output_path = _find_dggrid_output(output_prefix)
         if output_path is None:
@@ -1416,6 +1419,7 @@ def build_dggrid_mesh_graph(
             raise RuntimeError(
                 "DGGRID completed but no readable vector output was found for prefix "
                 f"'{output_prefix.name}'. Temp directory contents: {tmp_contents}"
+                f"\nstdout:\n{result.stdout.strip()}\nstderr:\n{result.stderr.strip()}"
             )
 
         cells = gpd.read_file(output_path)

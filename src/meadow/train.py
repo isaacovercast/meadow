@@ -550,6 +550,34 @@ def split_pairs(
     )
 
 
+def _initialize_calibration(
+    model: MultiSpeciesResistanceModel,
+    species_graphs: List[SpeciesGraph],
+) -> None:
+    """Fit the initial intercept and nonnegative slope using training pairs only."""
+    with torch.no_grad():
+        for s, g in enumerate(species_graphs):
+            features = torch.from_numpy(g.edge_features)
+            edges = torch.from_numpy(g.edge_index)
+            support = (
+                None if g.edge_support_weight is None
+                else torch.from_numpy(g.edge_support_weight)
+            )
+            R, _, _ = model.resistance_matrix(
+                s, edges, features, g.num_nodes, edge_support_weight=support
+            )
+            x = R[g.pair_i, g.pair_j]
+            y = torch.from_numpy(g.pair_dist)
+            centered_x = x - x.mean()
+            denominator = torch.sum(centered_x ** 2)
+            tolerance = torch.finfo(x.dtype).eps * torch.sum(x ** 2).clamp_min(1.0)
+            slope = x.new_zeros(())
+            if denominator > tolerance:
+                slope = (torch.sum(centered_x * (y - y.mean())) / denominator).clamp_min(0.0)
+            model.beta[s].copy_(slope)
+            model.alpha[s].copy_(y.mean() - slope * x.mean())
+
+
 def train_model(
     species_graphs: List[SpeciesGraph],
     hidden_dim: int = 32,
@@ -569,6 +597,10 @@ def train_model(
     report_validation: bool = True,
 ) -> MultiSpeciesResistanceModel:
     """Train the multi-species resistance model on graph pair-distance targets.
+
+    Start with uniform edge resistances and fit each species' initial intercept
+    and nonnegative multiplier to its training pairs after the validation split.
+    These calibration parameters then remain trainable by Adam as usual.
 
     Parameters
     ----------
@@ -625,7 +657,6 @@ def train_model(
     smooth_weight = (edge_smoothing / max(1e-6, 1.0 - edge_smoothing)) ** 2
 
     model = MultiSpeciesResistanceModel(num_species, edge_feat_dim, hidden_dim=hidden_dim)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     if val_fraction and val_fraction > 0:
         for s, g in enumerate(species_graphs):
@@ -647,6 +678,9 @@ def train_model(
                     seed=seed + s,
                     min_val_pairs=min_val_pairs,
                 )
+
+    _initialize_calibration(model, species_graphs)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     best_val = float("inf")
     best_state = None

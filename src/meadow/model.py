@@ -30,6 +30,10 @@ class EdgeMLP(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, 1),
         )
+        # Keep random hidden features, but start every edge logit at zero.
+        # Both shared and species heads therefore give uniform resistances.
+        nn.init.zeros_(self.net[-1].weight)
+        nn.init.zeros_(self.net[-1].bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Compute scalar edge logits for a batch of edge features.

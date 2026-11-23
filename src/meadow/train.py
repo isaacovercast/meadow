@@ -566,6 +566,7 @@ def train_model(
     min_delta: float = 1e-4,
     restore_best: bool = True,
     seed: int = 0,
+    report_validation: bool = True,
 ) -> MultiSpeciesResistanceModel:
     """Train the multi-species resistance model on graph pair-distance targets.
 
@@ -599,14 +600,22 @@ def train_model(
     min_delta : float, optional
         Minimum validation improvement to reset patience.
     restore_best : bool, optional
-        Whether to restore best validation parameters after early stop.
+        Whether to restore the best evaluated validation parameters when
+        training finishes, including when the epoch limit is reached.
     seed : int, optional
         Base random seed used during split creation.
+    report_validation : bool, optional
+        Print final per-species validation MSE, the MSE of predicting the
+        training-pair mean, and percentage improvement over that baseline.
+        This summary is independent of `log_every`.
 
     Returns
     -------
     MultiSpeciesResistanceModel
-        Trained model instance.
+        Trained model instance. `validation_metrics` contains per-species
+        `model_mse`, `constant_mse`, and `improvement_percent` for the returned
+        weights. Improvement is `None` when the constant MSE is zero. Species
+        without validation pairs are omitted.
     """
     if not (0.0 <= edge_smoothing <= 1.0):
         raise ValueError("edge_smoothing must be in [0, 1].")
@@ -695,26 +704,26 @@ def train_model(
                 val_mse = torch.mean((val_pred - val_dist) ** 2)
                 total_val = total_val + val_mse
 
-        total_loss.backward()
-        optimizer.step()
-
         if has_val:
             val_loss = (total_val / max(1, val_count)).item()
             if val_loss < best_val - min_delta:
                 best_val = val_loss
+                # Validation used the current forward pass, so checkpoint
+                # these weights before the optimizer changes them.
                 best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
                 epochs_since_improve = 0
             else:
                 epochs_since_improve += 1
 
             if patience and epochs_since_improve >= patience:
-                if restore_best and best_state is not None:
-                    model.load_state_dict(best_state)
                 if log_every:
                     print(
                         f"early stop at epoch {epoch} val {val_loss:.6f} best {best_val:.6f}"
                     )
                 break
+
+        total_loss.backward()
+        optimizer.step()
 
         if log_every and epoch % log_every == 0:
             if has_val:
@@ -723,5 +732,54 @@ def train_model(
                 )
             else:
                 print(f"epoch {epoch:4d} loss {total_loss.item():.6f}")
+
+    if restore_best and best_state is not None:
+        model.load_state_dict(best_state)
+
+    # Score the returned weights, not the last epoch or a stale forward pass.
+    model.validation_metrics = {}
+    with torch.no_grad():
+        for s, g in enumerate(species_graphs):
+            if (
+                g.val_pair_i is None
+                or g.val_pair_j is None
+                or g.val_pair_dist is None
+                or g.val_pair_dist.size == 0
+                or g.pair_dist.size == 0
+            ):
+                continue
+            edge_feat = torch.from_numpy(g.edge_features)
+            edge_index = torch.from_numpy(g.edge_index)
+            support = (
+                None if g.edge_support_weight is None
+                else torch.from_numpy(g.edge_support_weight)
+            )
+            R, _, _ = model.resistance_matrix(
+                s, edge_index, edge_feat, g.num_nodes, edge_support_weight=support
+            )
+            pred = model.alpha[s] + model.beta[s] * R[g.val_pair_i, g.val_pair_j]
+            target = torch.from_numpy(g.val_pair_dist)
+            model_mse = float(torch.mean((pred - target) ** 2))
+            training_mean = float(np.mean(g.pair_dist))
+            constant_mse = float(torch.mean((training_mean - target) ** 2))
+            improvement = (
+                100.0 * (1.0 - model_mse / constant_mse)
+                if constant_mse > 0.0 else None
+            )
+            model.validation_metrics[g.name] = {
+                "model_mse": model_mse,
+                "constant_mse": constant_mse,
+                "improvement_percent": improvement,
+            }
+            if report_validation:
+                improvement_text = (
+                    f"{improvement:+.1f}%" if improvement is not None
+                    else "n/a (constant MSE is zero)"
+                )
+                print(
+                    f"Validation [{g.name}]: model MSE={model_mse:.6g}, "
+                    f"constant MSE={constant_mse:.6g}, "
+                    f"improvement={improvement_text}"
+                )
 
     return model

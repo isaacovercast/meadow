@@ -135,7 +135,7 @@ def build_species_graphs(
     mesh_spacing_deg: float | None = None,
     mesh_grid_type: str = "triangular",
     mesh_env: np.ndarray | None = None,
-    include_coord_midpoint: bool = False,
+    include_coord_midpoint: bool = True,
     buffer_km: float | None = None,
     bbox: str | None = "convex_hull",
     bbox_file: str | None = None,
@@ -163,8 +163,8 @@ def build_species_graphs(
     provided. Raster fill indexes are automatically restricted to the final
     mesh extent plus a 32-pixel margin in each raster; nearest searches expand
     when necessary to preserve the full-raster nearest-pixel result.
-    Set `include_coord_midpoint=True` to add graph-edge midpoint
-    coordinates as additional edge features. Graph nodes can optionally be
+    Graph-edge midpoint coordinates are included as features by default;
+    set `include_coord_midpoint=False` to omit them. Graph nodes can optionally be
     masked to land or marine locations
     before sample assignment. Optional support attenuation weights can also be
     precomputed from graph distance to occupied nodes; setting

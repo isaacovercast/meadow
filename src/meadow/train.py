@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Iterable, List
+import warnings
 
 import numpy as np
 import torch
@@ -482,6 +483,8 @@ def split_pairs(
     strategy: str = "site",
     seed: int = 0,
     min_val_pairs: int = 50,
+    species_name: str | None = None,
+    _fallback_species: set[str] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Split pairwise targets into train and validation subsets.
 
@@ -494,15 +497,19 @@ def split_pairs(
     pair_dist : np.ndarray
         Target distances for each `(pair_i, pair_j)` entry.
     num_nodes : int
-        Total number of nodes represented by pair indices.
+        Total graph node count, retained for API compatibility. Site selection
+        uses only occupied node IDs appearing in the pair arrays.
     val_fraction : float, optional
-        Fraction of examples assigned to validation.
+        Fraction of occupied sites (site holdout) or pairs (pair holdout)
+        assigned to validation.
     strategy : str, optional
         `"site"` for site holdout, `"pair"` for random pair holdout.
     seed : int, optional
         Random seed for split reproducibility.
     min_val_pairs : int, optional
         Minimum pairs required in each split before accepting site-based holdout.
+    species_name : str | None, optional
+        Species label included in a warning if site holdout falls back to pairs.
 
     Returns
     -------
@@ -515,9 +522,12 @@ def split_pairs(
 
     rng = np.random.default_rng(seed)
 
-    if strategy == "site" and num_nodes >= 4:
-        n_val = max(1, int(round(val_fraction * num_nodes)))
-        val_sites = rng.choice(num_nodes, size=n_val, replace=False)
+    if strategy == "site":
+        occupied = np.unique(np.concatenate([pair_i, pair_j]))
+
+    if strategy == "site" and occupied.size >= 4:
+        n_val = max(1, int(round(val_fraction * occupied.size)))
+        val_sites = rng.choice(occupied, size=n_val, replace=False)
         in_val_i = np.isin(pair_i, val_sites)
         in_val_j = np.isin(pair_j, val_sites)
         val_mask = in_val_i & in_val_j
@@ -531,6 +541,25 @@ def split_pairs(
                 pair_i[val_mask],
                 pair_j[val_mask],
                 pair_dist[val_mask],
+            )
+
+    if strategy == "site":
+        label = f"Species '{species_name}': " if species_name is not None else ""
+        reason = (
+            f"site holdout produced {int(train_mask.sum())} training pairs and "
+            f"{int(val_mask.sum())} validation pairs; at least min_val_pairs={min_val_pairs} "
+            "are required in each split. "
+            if occupied.size >= 4 else "site holdout requires at least 4 occupied sites. "
+        )
+        if _fallback_species is not None:
+            _fallback_species.add(species_name or "unnamed species")
+        else:
+            warnings.warn(
+                label + reason + "Using pair holdout instead, which can share sites between "
+                "training and validation. Lower min_val_pairs or adjust val_fraction to "
+                "obtain a usable site split, or explicitly set val_strategy='pair' in train_model.",
+                UserWarning,
+                stacklevel=2,
             )
 
     # fallback to random pair holdout
@@ -548,6 +577,20 @@ def split_pairs(
         pair_j[val_idx],
         pair_dist[val_idx],
     )
+
+
+def _warn_pair_fallbacks(species_names: set[str], min_val_pairs: int) -> None:
+    """Report all automatic split fallbacks together, once per caller."""
+    if species_names:
+        warnings.warn(
+            f"Site holdout fell back to pair holdout for {len(species_names)} species: "
+            f"{', '.join(sorted(species_names))}. Site holdout requires at least "
+            f"min_val_pairs={min_val_pairs} pairs in both splits and at least 4 occupied sites. "
+            "Lower min_val_pairs or adjust val_fraction, or explicitly set val_strategy='pair'. "
+            "Pair holdout can share sites between training and validation.",
+            UserWarning,
+            stacklevel=3,
+        )
 
 
 def _initialize_calibration(
@@ -595,12 +638,14 @@ def train_model(
     restore_best: bool = True,
     seed: int = 0,
     report_validation: bool = True,
+    model: MultiSpeciesResistanceModel | None = None,
 ) -> MultiSpeciesResistanceModel:
     """Train the multi-species resistance model on graph pair-distance targets.
 
-    Start with uniform edge resistances and fit each species' initial intercept
-    and nonnegative multiplier to its training pairs after the validation split.
-    These calibration parameters then remain trainable by Adam as usual.
+    New models start with uniform edge resistances and fit each species' initial
+    intercept and nonnegative multiplier to training pairs after the validation
+    split. Supplied models retain their weights and calibration. Calibration
+    parameters remain trainable by Adam as usual.
 
     Parameters
     ----------
@@ -611,7 +656,7 @@ def train_model(
     lr : float, optional
         Adam learning rate.
     epochs : int, optional
-        Maximum number of optimization epochs.
+        Maximum number of additional optimization epochs for this call.
     l2_shared : float, optional
         L2 penalty weight for shared logits.
     l2_species : float, optional
@@ -640,6 +685,13 @@ def train_model(
         Print final per-species validation MSE, the MSE of predicting the
         training-pair mean, and percentage improvement over that baseline.
         This summary is independent of `log_every`.
+    model : MultiSpeciesResistanceModel | None, optional
+        Continue training this model in place, retaining its weights and
+        calibration. Reuse the same graphs, species order, and feature definitions.
+        Graph pairs are used as supplied without creating a new validation split;
+        `hidden_dim` and split settings are ignored. Each call starts a fresh Adam
+        optimizer and early-stopping counter. With validation and `restore_best=True`,
+        the incoming weights are eligible as the best checkpoint.
 
     Returns
     -------
@@ -656,9 +708,18 @@ def train_model(
     edge_feat_dim = species_graphs[0].edge_features.shape[1]
     smooth_weight = (edge_smoothing / max(1e-6, 1.0 - edge_smoothing)) ** 2
 
-    model = MultiSpeciesResistanceModel(num_species, edge_feat_dim, hidden_dim=hidden_dim)
+    continuing = model is not None
+    if model is None:
+        model = MultiSpeciesResistanceModel(num_species, edge_feat_dim, hidden_dim=hidden_dim)
+    else:
+        if len(model.species) != num_species:
+            raise ValueError("Supplied model must have the same number of species as the graphs.")
+        if any(g.edge_features.shape[1] != model.shared.net[0].in_features
+               for g in species_graphs):
+            raise ValueError("Supplied model and graphs must have the same edge feature width.")
 
-    if val_fraction and val_fraction > 0:
+    if not continuing and val_fraction and val_fraction > 0:
+        fallback_species = set()
         for s, g in enumerate(species_graphs):
             if g.val_pair_i is None:
                 (
@@ -677,9 +738,13 @@ def train_model(
                     strategy=val_strategy,
                     seed=seed + s,
                     min_val_pairs=min_val_pairs,
+                    species_name=g.name,
+                    _fallback_species=fallback_species,
                 )
+        _warn_pair_fallbacks(fallback_species, min_val_pairs)
 
-    _initialize_calibration(model, species_graphs)
+    if not continuing:
+        _initialize_calibration(model, species_graphs)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     best_val = float("inf")

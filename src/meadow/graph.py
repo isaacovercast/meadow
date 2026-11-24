@@ -820,6 +820,37 @@ def _find_dggrid_output(output_prefix: Path) -> Path | None:
     return None
 
 
+def _merge_dggrid_vertices(
+    node_coords: np.ndarray,
+    edge_index: np.ndarray,
+    tolerance_deg: float = 1e-7,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Join numerically coincident cell vertices across DGGRID quad boundaries."""
+    from scipy.spatial import cKDTree
+
+    # Adjacent quad projections can disagree by sub-millimetres. A tolerance
+    # of 1e-7 degrees is at most about 1 cm, far below DGGRID mesh spacing.
+    pairs = cKDTree(node_coords).query_pairs(tolerance_deg, output_type="ndarray")
+    if not pairs.size:
+        return node_coords, edge_index
+    parents = np.arange(len(node_coords))
+
+    def root(i):
+        while parents[i] != i:
+            parents[i] = parents[parents[i]]
+            i = parents[i]
+        return i
+
+    for a, b in pairs:
+        ra, rb = root(a), root(b)
+        parents[max(ra, rb)] = min(ra, rb)
+    roots = np.array([root(i) for i in range(len(node_coords))])
+    representatives, inverse = np.unique(roots, return_inverse=True)
+    remapped = np.sort(inverse[edge_index], axis=1)
+    remapped = remapped[remapped[:, 0] != remapped[:, 1]]
+    return node_coords[representatives], np.unique(remapped, axis=0)
+
+
 def _graph_from_cell_polygons(cells_gdf) -> tuple[np.ndarray, np.ndarray]:
     """Convert triangular cell polygons into a vertex-edge graph of triangle sides."""
     if cells_gdf.empty:
@@ -875,7 +906,7 @@ def _graph_from_cell_polygons(cells_gdf) -> tuple[np.ndarray, np.ndarray]:
 
     mesh_coords = np.asarray(node_coords, dtype=np.float64)
     edge_index = np.asarray(sorted(edges), dtype=np.int64)
-    return mesh_coords, edge_index
+    return _merge_dggrid_vertices(mesh_coords, edge_index)
 
 
 def _resolve_bbox_spec(

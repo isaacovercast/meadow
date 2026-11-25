@@ -6,6 +6,7 @@ from heapq import heappop, heappush
 from typing import Sequence
 
 import numpy as np
+import pandas as pd
 import torch
 from scipy.spatial import cKDTree
 
@@ -70,53 +71,6 @@ class GraphCVFoldSummary:
     total_samples: int
     num_supported_species: int
     species_stats: dict[str, SpeciesFoldStats]
-
-
-@dataclass
-class EdgeSmoothingCVCandidate:
-    """Cross-validation scores for one candidate edge-smoothing value.
-
-    Parameters
-    ----------
-    edge_smoothing : float
-        Candidate smoothing value that was evaluated.
-    mean_validation_loss : float
-        Mean fold loss averaged after species balancing.
-    std_validation_loss : float
-        Standard deviation of fold losses.
-    fold_losses : np.ndarray
-        Validation loss for each evaluated fold.
-    species_counts : np.ndarray
-        Number of scored species in each evaluated fold.
-    """
-
-    edge_smoothing: float
-    mean_validation_loss: float
-    std_validation_loss: float
-    fold_losses: np.ndarray
-    species_counts: np.ndarray
-
-
-@dataclass
-class EdgeSmoothingCVResult:
-    """Best smoothing choice plus the fold structure and candidate scores.
-
-    Parameters
-    ----------
-    best_edge_smoothing : float
-        Candidate smoothing value with the lowest mean validation loss.
-    candidates : list[EdgeSmoothingCVCandidate]
-        All evaluated candidates and their scores.
-    fold_assignments : np.ndarray
-        Length-`N` fold id for each shared graph node.
-    fold_summaries : list[GraphCVFoldSummary]
-        Validation-support summary for each active fold.
-    """
-
-    best_edge_smoothing: float
-    candidates: list[EdgeSmoothingCVCandidate]
-    fold_assignments: np.ndarray
-    fold_summaries: list[GraphCVFoldSummary]
 
 
 def _validate_shared_graph(species_graphs: Sequence[SpeciesGraph]) -> SpeciesGraph:
@@ -493,33 +447,41 @@ def _clone_graph_for_fold(
 def _evaluate_fold_model(
     model,
     species_graphs: Sequence[SpeciesGraph],
-) -> tuple[float, int]:
-    """Compute species-balanced validation MSE for one trained fold model."""
+) -> dict[str, float]:
+    """Average held-out errors and learned edge variation equally over species."""
     model.eval()
-    species_losses: list[float] = []
+    metrics = []
     with torch.no_grad():
         for species_idx, graph in enumerate(species_graphs):
             if graph.val_pair_i is None or graph.val_pair_dist is None:
                 continue
 
             edge_feat = torch.from_numpy(graph.edge_features)
-            edge_index = torch.from_numpy(graph.edge_index)
             resistance, _, _ = model.resistance_matrix(
                 species_idx,
-                edge_index,
+                torch.from_numpy(graph.edge_index),
                 edge_feat,
                 graph.num_nodes,
+                edge_support_weight=(None if graph.edge_support_weight is None
+                                     else torch.from_numpy(graph.edge_support_weight)),
             )
             pred = model.alpha[species_idx] + model.beta[species_idx] * resistance[
-                graph.val_pair_i,
-                graph.val_pair_j,
+                graph.val_pair_i, graph.val_pair_j,
             ]
             target = torch.from_numpy(graph.val_pair_dist)
-            species_losses.append(float(torch.mean((pred - target) ** 2).item()))
+            training_mean = float(np.mean(graph.pair_dist))
+            edges = model.edge_resistance(species_idx, edge_feat)[0].numpy()
+            low, high = np.percentile(edges, [10, 90])
+            metrics.append({
+                "model_mse": float(torch.mean((pred - target) ** 2)),
+                "constant_mse": float(torch.mean((training_mean - target) ** 2)),
+                "edge_cv": float(np.std(edges) / np.mean(edges)),
+                "edge_q90_q10": float(high / low),
+            })
 
-    if not species_losses:
+    if not metrics:
         raise ValueError("Fold evaluation produced no validation losses.")
-    return float(np.mean(species_losses)), len(species_losses)
+    return {key: float(np.mean([row[key] for row in metrics])) for key in metrics[0]}
 
 
 def _print_progress_line(message: str, width: int = 120) -> None:
@@ -538,7 +500,7 @@ def _finish_progress_line() -> None:
 
 def choose_edge_smoothing_cv(
     species_graphs: Sequence[SpeciesGraph],
-    smoothing_values: Sequence[float] = (0.0, 0.05, 0.1, 0.2, 0.35, 0.5, 0.7, 0.85, 0.93, 0.97),
+    smoothing_values: Sequence[float] | None = None,
     n_folds: int = 5,
     project_to: str = "EPSG:3857",
     coord_order: str = "latlon",
@@ -550,154 +512,107 @@ def choose_edge_smoothing_cv(
     min_supported_species: int | None = None,
     hidden_dim: int = 16,
     lr: float = 2e-2,
-    epochs: int = 400,
+    epochs: int = 1000,
     l2_shared: float = 1e-4,
     l2_species: float = 1e-4,
     log_every: int = 0,
-    patience: int = 12,
-    min_delta: float = 5e-4,
+    patience: int = 100,
+    min_delta: float = 1e-6,
     restore_best: bool = True,
     seed: int = 0,
     show_progress: bool = True,
-) -> EdgeSmoothingCVResult:
-    """Choose `edge_smoothing` by graph-based cross-validation on held-out folds.
+) -> pd.DataFrame:
+    """Evaluate a fixed smoothing grid on the original spatial CV folds.
 
-    The fold partition is built once from shared graph topology and observed
-    sample density, then each candidate smoothing value is scored by species-
-    balanced validation MSE across those held-out folds. The training defaults
-    are intentionally lighter than `train_model(...)` so the search returns a
-    coarse but useful smoothing estimate quickly.
+    None selects ten defaults: 0, .01, .025, .05, .075, .1, .15, .2, .3, .5.
+    Each candidate uses the supplied training budget and early-stopping settings,
+    with identical folds and initialization seeds across candidates.
+
+    Return a DataFrame sorted by model_mse (best first). Errors and edge metrics
+    are averaged equally over scored species within folds, then over folds.
+    constant_mse predicts each species' training-pair mean on its held-out pairs;
+    improvement_percent is 100 * (1 - model_mse / constant_mse), or NaN when
+    constant_mse is zero. model_mse_std is the standard deviation across folds.
+    edge_cv is edge standard deviation / mean; edge_q90_q10 is q90 / q10.
+    Both summarize combined learned edge resistances before support attenuation.
+    Fold assignments and support summaries are available in DataFrame.attrs.
     """
-    if not smoothing_values:
+    values = ([0., .01, .025, .05, .075, .1, .15, .2, .3, .5]
+              if smoothing_values is None else [float(value) for value in smoothing_values])
+    if not values:
         raise ValueError("smoothing_values is empty.")
-    smoothing_values = tuple(float(value) for value in smoothing_values)
-    for value in smoothing_values:
-        if not (0.0 <= float(value) <= 1.0):
-            raise ValueError("All smoothing_values must lie in [0, 1].")
+    if any(not 0. <= value <= 1. for value in values):
+        raise ValueError("All smoothing_values must lie in [0, 1].")
 
     fold_ids, fold_summaries = build_graph_cv_folds(
-        species_graphs,
-        n_folds=n_folds,
-        project_to=project_to,
-        coord_order=coord_order,
-        coords_crs=coords_crs,
-        min_train_pairs=min_train_pairs,
-        min_val_pairs=min_val_pairs,
-        min_train_nodes=min_train_nodes,
-        min_val_nodes=min_val_nodes,
+        species_graphs, n_folds=n_folds, project_to=project_to,
+        coord_order=coord_order, coords_crs=coords_crs,
+        min_train_pairs=min_train_pairs, min_val_pairs=min_val_pairs,
+        min_train_nodes=min_train_nodes, min_val_nodes=min_val_nodes,
         min_supported_species=min_supported_species,
     )
-
-    candidate_results: list[EdgeSmoothingCVCandidate] = []
-    active_folds = [summary.fold_id for summary in fold_summaries]
-    summary_by_fold = {summary.fold_id: summary for summary in fold_summaries}
-    usable_folds = []
-    for fold_id in active_folds:
-        fold_summary = summary_by_fold[fold_id]
-        if any(stats.used_for_validation for stats in fold_summary.species_stats.values()):
-            usable_folds.append(fold_id)
-
-    if len(usable_folds) < 2:
+    # Construct each fold once, rather than rebuilding it for every candidate.
+    folds = []
+    for summary in fold_summaries:
+        graphs = []
+        for graph in species_graphs:
+            stats = summary.species_stats[graph.name]
+            if not stats.used_for_training:
+                continue
+            masks = _fold_masks(graph, fold_ids, summary.fold_id)
+            clone = _clone_graph_for_fold(graph, *masks)
+            if clone is None:
+                continue
+            if not stats.used_for_validation:
+                clone.val_pair_i = clone.val_pair_j = clone.val_pair_dist = None
+            graphs.append(clone)
+        if any(graph.val_pair_i is not None for graph in graphs):
+            folds.append((summary.fold_id, graphs))
+    if len(folds) < 2:
         raise ValueError("Need at least two folds with usable validation species.")
 
-    total_steps = len(smoothing_values) * len(usable_folds)
-    completed_steps = 0
-
-    if show_progress:
-        _print_progress_line(
-            f"choose_edge_smoothing_cv: evaluating {len(smoothing_values)} smoothing values "
-            f"across {len(usable_folds)} folds ({total_steps} train/eval runs)"
-        )
-
-    for candidate_idx, smoothing in enumerate(smoothing_values, start=1):
-        fold_losses: list[float] = []
-        species_counts: list[int] = []
-
-        for fold_idx, fold_id in enumerate(usable_folds, start=1):
-            fold_summary = summary_by_fold[fold_id]
-            fold_graphs: list[SpeciesGraph] = []
-            for graph in species_graphs:
-                train_mask, val_mask = _fold_masks(graph, fold_ids, fold_id)
-                stats = fold_summary.species_stats[graph.name]
-                if not stats.used_for_training:
-                    continue
-
-                graph_copy = _clone_graph_for_fold(graph, train_mask, val_mask)
-                if graph_copy is None:
-                    continue
-                if not stats.used_for_validation:
-                    graph_copy.val_pair_i = None
-                    graph_copy.val_pair_j = None
-                    graph_copy.val_pair_dist = None
-                fold_graphs.append(graph_copy)
-
-            if not fold_graphs:
-                continue
-            if not any(graph.val_pair_i is not None for graph in fold_graphs):
-                continue
-
+    rows = []
+    total_runs = len(values) * len(folds)
+    for candidate_idx, value in enumerate(values):
+        fold_metrics = []
+        for fold_idx, (fold_id, graphs) in enumerate(folds):
             if show_progress:
-                scored_species = sum(graph.val_pair_i is not None for graph in fold_graphs)
                 _print_progress_line(
-                    f"candidate {candidate_idx}/{len(smoothing_values)} "
-                    f"edge_smoothing={smoothing:.4f} "
-                    f"fold {fold_idx}/{len(usable_folds)} "
-                    f"(graph fold {fold_id}, {scored_species} scored species) "
-                    f"step {completed_steps + 1}/{total_steps}"
+                    f"edge_smoothing={value:g} fold={fold_id} "
+                    f"run {candidate_idx * len(folds) + fold_idx + 1}/{total_runs}"
                 )
+            with torch.random.fork_rng(devices=[]):
+                torch.manual_seed(seed + int(fold_id))
+                model = train_model(
+                    graphs, edge_smoothing=value, hidden_dim=hidden_dim, lr=lr,
+                    epochs=epochs, l2_shared=l2_shared, l2_species=l2_species,
+                    log_every=log_every, val_fraction=0., patience=patience,
+                    min_delta=min_delta, restore_best=restore_best,
+                    seed=seed + int(fold_id), report_validation=False,
+                )
+            fold_metrics.append(_evaluate_fold_model(model, graphs))
+        averages = {key: float(np.mean([row[key] for row in fold_metrics]))
+                    for key in fold_metrics[0]}
+        baseline = averages["constant_mse"]
+        rows.append({
+            "edge_smoothing": value,
+            "model_mse": averages["model_mse"],
+            "model_mse_std": float(np.std([row["model_mse"] for row in fold_metrics])),
+            "constant_mse": baseline,
+            "improvement_percent": (100. * (1. - averages["model_mse"] / baseline)
+                                    if baseline > 0. else np.nan),
+            "edge_cv": averages["edge_cv"],
+            "edge_q90_q10": averages["edge_q90_q10"],
+        })
 
-            model = train_model(
-                fold_graphs,
-                hidden_dim=hidden_dim,
-                lr=lr,
-                epochs=epochs,
-                l2_shared=l2_shared,
-                l2_species=l2_species,
-                edge_smoothing=float(smoothing),
-                log_every=log_every,
-                val_fraction=0.0,
-                patience=patience,
-                min_delta=min_delta,
-                restore_best=restore_best,
-                seed=seed + int(fold_id),
-            )
-            fold_loss, species_count = _evaluate_fold_model(model, fold_graphs)
-            fold_losses.append(fold_loss)
-            species_counts.append(species_count)
-            completed_steps += 1
-
-        if not fold_losses:
-            raise ValueError(
-                f"Candidate edge_smoothing={smoothing:.6f} produced no usable validation folds."
-            )
-
-        candidate = EdgeSmoothingCVCandidate(
-            edge_smoothing=smoothing,
-            mean_validation_loss=float(np.mean(fold_losses)),
-            std_validation_loss=float(np.std(fold_losses)),
-            fold_losses=np.asarray(fold_losses, dtype=np.float64),
-            species_counts=np.asarray(species_counts, dtype=np.int64),
-        )
-        candidate_results.append(candidate)
-
-    best = min(candidate_results, key=lambda result: result.mean_validation_loss)
+    result = pd.DataFrame(rows).sort_values("model_mse", kind="stable").reset_index(drop=True)
+    result.attrs["fold_assignments"] = fold_ids
+    result.attrs["fold_summaries"] = fold_summaries
     if show_progress:
-        _print_progress_line(
-            f"choose_edge_smoothing_cv: best edge_smoothing={best.edge_smoothing:.4f} "
-            f"(mean_validation_loss={best.mean_validation_loss:.6f})"
-        )
         _finish_progress_line()
-        print("edge_smoothing CV summary:", flush=True)
-        for candidate in candidate_results:
-            print(
-                f"  edge_smoothing={candidate.edge_smoothing:.4f} "
-                f"mean_validation_loss={candidate.mean_validation_loss:.6f} "
-                f"std={candidate.std_validation_loss:.6f}",
-                flush=True,
-            )
-    return EdgeSmoothingCVResult(
-        best_edge_smoothing=best.edge_smoothing,
-        candidates=candidate_results,
-        fold_assignments=fold_ids,
-        fold_summaries=fold_summaries,
-    )
+        best = result.iloc[0]
+        print(f"Best edge_smoothing={best['edge_smoothing']:g} "
+              f"(CV MSE={best['model_mse']:.6g}, "
+              f"improvement={best['improvement_percent']:+.1f}%)", flush=True)
+        print(f"edge_smoothing CV summary:\n{result.to_markdown(index=False, tablefmt='simple')}")
+    return result

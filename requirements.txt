@@ -1,4 +1,6 @@
 numpy
+pandas
+scikit-learn
 scipy
 torch
 matplotlib
@@ -6,10 +8,13 @@ rasterio
 jupyterlab
 contextily
 geopandas
+geodatasets
+shapely
+trimesh
 folium
 pykrige
 networkx
 mkdocs
 mkdocs-material
 h5py
-dggrid
+# DGGRID is an external executable: conda install -c conda-forge dggrid

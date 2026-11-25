@@ -8,6 +8,28 @@ A Python machine-learning tool for quantifying shared and species-specific migra
 - Samples environmental rasters at the exact graph nodes used for training
 - Learns shared and species-specific edge resistances and fits genetic distances via effective resistance
 
+## Install with pip
+
+Install this repository explicitly:
+
+```bash
+python -m pip install "git+https://github.com/isaacovercast/meadow.git"
+```
+
+This installs Meadow and its declared Python runtime dependencies. For local
+development, run the following from the repository root:
+
+```bash
+python -m pip install -e ".[dev]"
+```
+
+The default DGGRID mesh backend additionally requires the external `dggrid`
+executable on `PATH`, installed separately, for example:
+
+```bash
+conda install -c conda-forge dggrid
+```
+
 ## Install (conda)
 
 ```bash

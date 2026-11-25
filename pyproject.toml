@@ -19,12 +19,19 @@ classifiers = [
 ]
 dependencies = [
   "numpy",
+  "pandas",
+  "h5py",
+  "scikit-learn",
   "scipy",
   "torch",
   "rasterio",
   "matplotlib",
   "contextily",
   "geopandas",
+  "geodatasets",
+  "jupyterlab",
+  "shapely",
+  "trimesh",
   "folium",
   "pykrige",
   "networkx",
@@ -32,7 +39,6 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-  "jupyterlab",
   "mkdocs",
   "mkdocs-material",
   "pytest",

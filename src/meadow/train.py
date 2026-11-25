@@ -125,6 +125,23 @@ def choose_mesh_spacing_km(
     return max(spacing_km, min_spacing_km)
 
 
+def _check_graph_connected(num_nodes: int, edge_index: np.ndarray) -> None:
+    """Require a single connected component, including unoccupied/isolated nodes."""
+    import networkx as nx
+
+    graph = nx.Graph()
+    graph.add_nodes_from(range(num_nodes))
+    graph.add_edges_from(edge_index)
+    sizes = sorted((len(c) for c in nx.connected_components(graph)), reverse=True)
+    if len(sizes) != 1:
+        raise ValueError(
+            f"Graph is disconnected: {len(sizes)} connected components "
+            f"(sizes: {sizes}). Check for duplicate mesh vertices or disconnected "
+            "regions. Repair the input graph or adjust mesh construction/coastline "
+            "masking before continuing."
+        )
+
+
 def build_species_graphs(
     species_list: List[SpeciesData],
     project_to: str | None = "EPSG:3857",
@@ -166,8 +183,10 @@ def build_species_graphs(
     Graph-edge midpoint coordinates are included as features by default;
     set `include_coord_midpoint=False` to omit them. Graph nodes can optionally be
     masked to land or marine locations
-    before sample assignment. Optional support attenuation weights can also be
-    precomputed from graph distance to occupied nodes; setting
+    before sample assignment. Both constructed and input graphs must have exactly
+    one connected component after masking; otherwise a ValueError reports the
+    component sizes before sample assignment. Optional support attenuation weights
+    can also be precomputed from graph distance to occupied nodes; setting
     `support_decay_km=None` disables this behavior.
     """
     if not species_list:
@@ -263,6 +282,8 @@ def build_species_graphs(
                     coord_order="latlon",
                     coords_crs="EPSG:4326",
                 )
+
+            _check_graph_connected(node_coords.shape[0], edge_index)
 
             if raster_stack is not None and mesh_env is not None:
                 raise ValueError("Provide either raster inputs or mesh_env, not both.")
@@ -373,6 +394,8 @@ def build_species_graphs(
                     coord_order="latlon",
                     coords_crs="EPSG:4326",
                 )
+
+            _check_graph_connected(mesh_coords.shape[0], edge_index)
 
             if raster_stack is not None and mesh_env is not None:
                 raise ValueError("Provide either raster inputs or mesh_env, not both.")

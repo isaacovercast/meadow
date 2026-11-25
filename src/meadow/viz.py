@@ -243,6 +243,7 @@ def plot_species_resistance(
     show_colorbar: bool = True,
     extent: tuple[float, float, float, float] | None = None,
     show_ticks: bool = True,
+    norm: clr.Normalize | None = None,
 ):
     """Plot one species graph with edges colored by resistance values.
 
@@ -299,6 +300,8 @@ def plot_species_resistance(
         Explicit `(xmin, xmax, ymin, ymax)` plot limits, overriding padding.
     show_ticks : bool, optional
         Whether to show coordinate ticks and labels; defaults to True.
+    norm : matplotlib.colors.Normalize | None, optional
+        Explicit color normalization; defaults to the plotted value range.
 
     Returns
     -------
@@ -358,7 +361,7 @@ def plot_species_resistance(
     for i, j in edge_index:
         segments.append([(x[i], y[i]), (x[j], y[j])])
 
-    lc = LineCollection(segments, cmap=cmap, alpha=alpha)
+    lc = LineCollection(segments, cmap=cmap, alpha=alpha, norm=norm)
     lc.set_array(edge_values)
     lc.set_linewidth(linewidth)
     if edge_support is not None:
@@ -474,6 +477,7 @@ def plot_multi_edge_resistance(
     show_colorbar: bool = True,
     linewidth: float = 0.8,
     map_padding: float = 0.1,
+    resistance_scale: str = "raw",
 ):
     """Plot resistance edges for multiple species as facets or an overlay summary.
 
@@ -509,6 +513,12 @@ def plot_multi_edge_resistance(
         If `True`, plot the full species resistance obtained by combining the
         shared and species-specific components. If `False`, plot only the
         species-specific logit component.
+    resistance_scale : str, optional
+        "raw" (default) or "log2_median" for log2(resistance / median).
+        The median is computed over all edges separately for each species,
+        before any overlay aggregation. Requires combine_with_shared=True.
+        Colors in log2 mode are symmetric around zero; returned edge_value
+        columns contain the displayed values. This does not change the model.
     show_sites : bool, optional
         Whether to overlay sample/site points.
     show_support_decay : bool, optional
@@ -540,6 +550,12 @@ def plot_multi_edge_resistance(
     """
     import matplotlib.pyplot as plt
     import torch
+
+    if resistance_scale not in {"raw", "log2_median"}:
+        raise ValueError("resistance_scale must be 'raw' or 'log2_median'")
+    if resistance_scale == "log2_median" and not combine_with_shared:
+        raise ValueError("resistance_scale='log2_median' requires combine_with_shared=True; "
+                         "species-specific logits are not positive resistances.")
 
     if not graphs:
         raise ValueError("graphs is empty")
@@ -573,7 +589,23 @@ def plot_multi_edge_resistance(
             edge_values, _, _ = model.edge_resistance(species_idx, edge_feat)
         else:
             _, edge_values = model.edge_logits(species_idx, edge_feat)
-        return edge_values.detach().numpy()
+        values = edge_values.detach().numpy()
+        if resistance_scale == "log2_median":
+            if not np.all(np.isfinite(values) & (values > 0)):
+                raise ValueError("log2_median requires finite, positive edge resistances.")
+            values = np.log2(values / np.median(values))
+        return values
+
+    def _display_options(values):
+        if resistance_scale == "raw":
+            return dict(explore_kwargs=explore_kwargs)
+        limit = float(np.max(np.abs(values))) or 1.0
+        # A symmetric range keeps the species median at the colormap midpoint,
+        # including for uniform resistance. Interactive overrides still apply.
+        return dict(
+            norm=clr.Normalize(vmin=-limit, vmax=limit),
+            explore_kwargs={"vmin": -limit, "vmax": limit, **(explore_kwargs or {})},
+        )
 
     def _support_weights_for_graph(graph) -> np.ndarray | None:
         if not show_support_decay:
@@ -618,6 +650,8 @@ def plot_multi_edge_resistance(
     )
 
     colorbar_label = "Edge resistance" if combine_with_shared else "Species-specific edge logit"
+    if resistance_scale == "log2_median":
+        colorbar_label = "log2(resistance / median)"
 
     if overlay:
         values_by_species = []
@@ -649,6 +683,10 @@ def plot_multi_edge_resistance(
         else:
             raise ValueError("overlay_stat must be 'mean' or 'std'")
 
+        display_options = _display_options(values_all)
+        overlay_label = colorbar_label
+        if resistance_scale == "log2_median":
+            overlay_label = f"{stat.capitalize()} of {colorbar_label}"
         ax, gdf = plot_species_resistance(
             base_graph.node_coords,
             base_graph.edge_index,
@@ -663,7 +701,7 @@ def plot_multi_edge_resistance(
             show_support_decay=show_support_decay,
             edge_support_weight=support_all,
             sample_coords=np.concatenate(plot_samples),
-            value_label=colorbar_label,
+            value_label=overlay_label,
             figsize=figsize,
             outfile=outfile,
             linewidth=linewidth,
@@ -671,13 +709,14 @@ def plot_multi_edge_resistance(
             show_colorbar=show_colorbar,
             extent=common_extent,
             show_ticks=False,
+            **display_options,
         )
         gdf["overlay_stat"] = stat
         gdf["n_species"] = len(species_list)
 
         folium_map = None
         if explore:
-            folium_map = _explore_safe(gdf, values_all, cmap, explore_kwargs)
+            folium_map = _explore_safe(gdf, values_all, cmap, display_options["explore_kwargs"])
             return ax, gdf, folium_map
         return ax, gdf
 
@@ -713,7 +752,6 @@ def plot_multi_edge_resistance(
             coord_order=coord_order,
             coords_crs=coords_crs,
             explore=explore,
-            explore_kwargs=explore_kwargs,
             show_sites=show_sites,
             show_support_decay=show_support_decay,
             edge_support_weight=edge_support,
@@ -724,6 +762,7 @@ def plot_multi_edge_resistance(
             show_colorbar=show_colorbar,
             extent=common_extent,
             show_ticks=False,
+            **_display_options(edge_values),
         )
         if explore:
             ax_i, gdf_i, fmap_i = res
@@ -780,6 +819,7 @@ def plot_shared_resistance(
     outfile: str | None = None,
     linewidth: float = 0.8,
     map_padding: float = 0.1,
+    resistance_scale: str = "raw",
 ):
     """Plot the shared cross-species resistance component as edges or a surface.
 
@@ -809,6 +849,12 @@ def plot_shared_resistance(
         If `True`, also return an interactive folium map.
     explore_kwargs : dict | None, optional
         Extra kwargs passed to `GeoDataFrame.explore`.
+    resistance_scale : str, optional
+        "raw" (default) or "log2_median" for log2(resistance / median),
+        using the median shared resistance over all edges in the selected graph.
+        Colors in log2 mode are symmetric around zero. For raster plots,
+        transformation precedes interpolation. Returned values use the chosen
+        scale; the fitted model is unchanged.
     rasterize : bool, optional
         If `True`, interpolate shared edge values to a raster surface.
     grid_size : int, optional
@@ -846,6 +892,8 @@ def plot_shared_resistance(
     """
     import torch
 
+    if resistance_scale not in {"raw", "log2_median"}:
+        raise ValueError("resistance_scale must be 'raw' or 'log2_median'")
     if not graphs:
         raise ValueError("graphs is empty")
     if graph_index < 0 or graph_index >= len(graphs):
@@ -857,6 +905,17 @@ def plot_shared_resistance(
     edge_feat = torch.from_numpy(g.edge_features)
     shared_logits = model.shared(edge_feat).squeeze(-1)
     edge_resistance = (torch.nn.functional.softplus(shared_logits) + 1e-4).detach().numpy()
+
+    norm = None
+    value_label = "Edge resistance"
+    if resistance_scale == "log2_median":
+        if not np.all(np.isfinite(edge_resistance) & (edge_resistance > 0)):
+            raise ValueError("log2_median requires finite, positive edge resistances.")
+        edge_resistance = np.log2(edge_resistance / np.median(edge_resistance))
+        limit = float(np.max(np.abs(edge_resistance))) or 1.0
+        norm = clr.Normalize(vmin=-limit, vmax=limit)
+        explore_kwargs = {"vmin": -limit, "vmax": limit, **(explore_kwargs or {})}
+        value_label = "log2(resistance / median)"
 
     edge_support = None
     if show_support_decay:
@@ -906,6 +965,8 @@ def plot_shared_resistance(
             linewidth=linewidth,
             map_padding=map_padding,
             show_ticks=False,
+            norm=norm,
+            value_label=value_label,
         )
 
     import matplotlib.pyplot as plt
@@ -1012,16 +1073,23 @@ def plot_shared_resistance(
             basemap_source = basemap
         ctx.add_basemap(ax, source=basemap_source, crs=basemap_crs, reset_extent=False)
 
+    if resistance_scale == "log2_median":
+        finite = grid_z[np.isfinite(grid_z)]
+        limit = (float(np.max(np.abs(finite))) if finite.size else 0.0) or 1.0
+        norm = clr.Normalize(vmin=-limit, vmax=limit)
+
     im = ax.imshow(
         grid_z,
         origin="lower",
         extent=extent,
         cmap=cmap,
+        norm=norm,
         aspect="auto",
         alpha=0.85,
         zorder=1,
     )
-    plt.colorbar(im, ax=ax, label="Shared resistance")
+    plt.colorbar(im, ax=ax, label=(value_label if resistance_scale == "log2_median"
+                                   else "Shared resistance"))
     ax.set_xlabel("")
     ax.set_ylabel("")
     _hide_coordinate_ticks(ax)
@@ -1060,11 +1128,14 @@ def plot_shared_resistance(
         from rasterio.warp import transform
 
         grid = np.asarray(grid_z)
-        vmin = float(np.nanmin(grid))
-        vmax = float(np.nanmax(grid))
-        if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
-            vmin, vmax = 0.0, 1.0
-        norm = colors.Normalize(vmin=vmin, vmax=vmax)
+        if resistance_scale == "log2_median":
+            norm = im.norm
+        else:
+            vmin = float(np.nanmin(grid))
+            vmax = float(np.nanmax(grid))
+            if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
+                vmin, vmax = 0.0, 1.0
+            norm = colors.Normalize(vmin=vmin, vmax=vmax)
         mapper = cm.get_cmap(cmap)
         rgba = mapper(norm(grid))
         rgba[..., 3] = np.where(np.isnan(grid), 0.0, rgba[..., 3])

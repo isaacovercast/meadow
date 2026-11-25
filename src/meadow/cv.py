@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from heapq import heappop, heappush
+from pathlib import Path
 from typing import Sequence
 
 import numpy as np
@@ -498,6 +499,26 @@ def _finish_progress_line() -> None:
     sys.stdout.flush()
 
 
+def _save_cv_figures(graphs, model, smoothing, outdir, project_to, coord_order, coords_crs):
+    """Save the standard shared and multi-species plots of one full-data refit."""
+    import matplotlib.pyplot as plt
+    from meadow.viz import plot_multi_edge_resistance, plot_shared_resistance
+
+    filename = f"edge_smoothing_{smoothing}.png"
+    common = dict(basemap_crs=project_to, coord_order=coord_order, coords_crs=coords_crs,
+                  explore=False)
+    for folder, plot in (("shared", plot_shared_resistance), ("multi", plot_multi_edge_resistance)):
+        axes, _ = plot(graphs, graphs, model, **common)
+        ax = np.asarray(axes, dtype=object).reshape(-1)[0]
+        figure = ax.figure
+        try:
+            figure.suptitle(f"{folder.capitalize()} edge resistance | edge_smoothing={smoothing}\n"
+                           "Final fit on all supplied pairs")
+            figure.savefig(outdir / folder / filename, dpi=150, bbox_inches="tight")
+        finally:
+            plt.close(figure)
+
+
 def choose_edge_smoothing_cv(
     species_graphs: Sequence[SpeciesGraph],
     smoothing_values: Sequence[float] | None = None,
@@ -521,6 +542,7 @@ def choose_edge_smoothing_cv(
     restore_best: bool = True,
     seed: int = 0,
     show_progress: bool = True,
+    outdir: str | Path | None = "edge_smoothing_cv",
 ) -> pd.DataFrame:
     """Evaluate a fixed smoothing grid on the original spatial CV folds.
 
@@ -536,6 +558,14 @@ def choose_edge_smoothing_cv(
     edge_cv is edge standard deviation / mean; edge_q90_q10 is q90 / q10.
     Both summarize combined learned edge resistances before support attenuation.
     Fold assignments and support summaries are available in DataFrame.attrs.
+
+    outdir defaults to "edge_smoothing_cv" relative to the working directory.
+    For each smoothing value, refit once on all supplied pairs (including any
+    existing validation pairs) for `epochs` epochs, with no validation holdout.
+    Save shared/edge_smoothing_<value>.png and multi/edge_smoothing_<value>.png
+    using the standard plotting helpers, with smoothing in each figure title.
+    These full-data refits do not contribute to the CV scores. Repeated calls
+    overwrite matching figure filenames. Set outdir=None to skip refits/figures.
     """
     values = ([0., .01, .025, .05, .075, .1, .15, .2, .3, .5]
               if smoothing_values is None else [float(value) for value in smoothing_values])
@@ -571,26 +601,43 @@ def choose_edge_smoothing_cv(
     if len(folds) < 2:
         raise ValueError("Need at least two folds with usable validation species.")
 
+    output = None if outdir is None else Path(outdir).expanduser()
+    final_graphs = []
+    if output is not None:
+        for folder in ("shared", "multi"):
+            (output / folder).mkdir(parents=True, exist_ok=True)
+        for graph in species_graphs:
+            # Training may already have split these graphs. Recombine the supplied
+            # pairs for the final fit without changing the caller's graph objects.
+            pairs = [graph.pair_i, graph.pair_j, graph.pair_dist]
+            if graph.val_pair_dist is not None:
+                pairs = [np.concatenate([train, val]) for train, val in zip(
+                    pairs, [graph.val_pair_i, graph.val_pair_j, graph.val_pair_dist])]
+            final_graphs.append(replace(
+                graph, pair_i=pairs[0].copy(), pair_j=pairs[1].copy(), pair_dist=pairs[2].copy(),
+                val_pair_i=None, val_pair_j=None, val_pair_dist=None,
+            ))
+
+    training = dict(hidden_dim=hidden_dim, lr=lr, epochs=epochs, l2_shared=l2_shared,
+                    l2_species=l2_species, log_every=log_every, val_fraction=0.,
+                    patience=patience, min_delta=min_delta, restore_best=restore_best,
+                    report_validation=False)
     rows = []
-    total_runs = len(values) * len(folds)
-    for candidate_idx, value in enumerate(values):
+    total_runs = len(values) * (len(folds) + (output is not None))
+    completed_runs = 0
+    for value in values:
         fold_metrics = []
-        for fold_idx, (fold_id, graphs) in enumerate(folds):
+        for fold_id, graphs in folds:
             if show_progress:
                 _print_progress_line(
                     f"edge_smoothing={value:g} fold={fold_id} "
-                    f"run {candidate_idx * len(folds) + fold_idx + 1}/{total_runs}"
+                    f"run {completed_runs + 1}/{total_runs}"
                 )
             with torch.random.fork_rng(devices=[]):
                 torch.manual_seed(seed + int(fold_id))
-                model = train_model(
-                    graphs, edge_smoothing=value, hidden_dim=hidden_dim, lr=lr,
-                    epochs=epochs, l2_shared=l2_shared, l2_species=l2_species,
-                    log_every=log_every, val_fraction=0., patience=patience,
-                    min_delta=min_delta, restore_best=restore_best,
-                    seed=seed + int(fold_id), report_validation=False,
-                )
+                model = train_model(graphs, edge_smoothing=value, seed=seed + int(fold_id), **training)
             fold_metrics.append(_evaluate_fold_model(model, graphs))
+            completed_runs += 1
         averages = {key: float(np.mean([row[key] for row in fold_metrics]))
                     for key in fold_metrics[0]}
         baseline = averages["constant_mse"]
@@ -605,9 +652,22 @@ def choose_edge_smoothing_cv(
             "edge_q90_q10": averages["edge_q90_q10"],
         })
 
+        if output is not None:
+            if show_progress:
+                _print_progress_line(
+                    f"edge_smoothing={value:g} final refit run {completed_runs + 1}/{total_runs}"
+                )
+            with torch.random.fork_rng(devices=[]):
+                torch.manual_seed(seed)
+                final_model = train_model(final_graphs, edge_smoothing=value, seed=seed, **training)
+            final_model.eval()
+            _save_cv_figures(final_graphs, final_model, value, output, project_to, coord_order, coords_crs)
+            completed_runs += 1
+
     result = pd.DataFrame(rows).sort_values("model_mse", kind="stable").reset_index(drop=True)
     result.attrs["fold_assignments"] = fold_ids
     result.attrs["fold_summaries"] = fold_summaries
+    result.attrs["outdir"] = None if output is None else str(output.resolve())
     if show_progress:
         _finish_progress_line()
         best = result.iloc[0]
